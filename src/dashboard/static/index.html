@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="dashboard-token" content="__DASHBOARD_TOKEN__" />
+    <title>Job Alerts</title>
+    <link rel="stylesheet" href="/app.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="logo" aria-hidden="true">◎</span>
+        <div>
+          <h1>Job Alerts</h1>
+          <p id="subtitle" class="muted">Loading…</p>
+        </div>
+      </div>
+      <div class="actions">
+        <span id="telegram" class="pill"></span>
+        <button id="run" class="primary" type="button">Search now</button>
+      </div>
+    </header>
+
+    <p id="schedule" class="notice">Loading…</p>
+
+    <div id="run-result" class="run-result" hidden></div>
+
+    <div class="layout">
+      <nav class="sidebar" aria-label="Filters">
+        <h2>Filters</h2>
+        <ul id="filters"></ul>
+        <details id="add-box" class="add-box">
+          <summary>+ Add filter</summary>
+          <form id="add-filter" autocomplete="off">
+            <label for="add-url">Upwork search link</label>
+            <input id="add-url" type="url" required placeholder="https://www.upwork.com/nx/search/jobs?q=..." />
+            <label for="add-name">Name <span class="muted">(optional)</span></label>
+            <input id="add-name" type="text" maxlength="60" placeholder="e.g. React Developer" />
+            <button class="primary" type="submit">Add and search</button>
+            <p id="add-msg" class="add-msg" hidden></p>
+          </form>
+        </details>
+        <div id="totals" class="totals muted"></div>
+      </nav>
+
+      <main>
+        <div class="toolbar">
+          <input id="q" type="search" placeholder="Search title, description or skills (e.g. node js, fullstack)" aria-label="Search jobs" />
+          <div class="datepick">
+            <label for="day">Posted on</label>
+            <input id="day" type="date" />
+            <button id="day-today" type="button">Today</button>
+            <button id="day-yesterday" type="button">Yesterday</button>
+            <button id="day-clear" type="button" hidden>All dates</button>
+          </div>
+          <div class="segmented" role="tablist" aria-label="Review state">
+            <button data-state="" class="active" role="tab">All</button>
+            <button data-state="new" role="tab">New</button>
+            <button data-state="saved" role="tab">Saved</button>
+            <button data-state="reviewed" role="tab">Reviewed</button>
+            <button data-state="dismissed" role="tab">Dismissed</button>
+          </div>
+        </div>
+        <h2 id="list-title" class="list-title">All jobs</h2>
+        <div id="jobs" class="jobs" aria-live="polite"></div>
+      </main>
+    </div>
+
+    <template id="job-tpl">
+      <article class="job">
+        <div class="job-head">
+          <a class="title" target="_blank" rel="noopener noreferrer"></a>
+          <div class="badges"></div>
+        </div>
+        <div class="meta"></div>
+        <p class="snippet"></p>
+        <div class="chips"></div>
+        <div class="job-actions">
+          <button data-act="saved" type="button">☆ Save</button>
+          <button data-act="reviewed" type="button">✓ Reviewed</button>
+          <button data-act="dismissed" type="button">✕ Dismiss</button>
+          <button data-act="new" type="button" class="undo">↺ Mark new</button>
+          <a class="open" target="_blank" rel="noopener noreferrer">Open on Upwork ↗</a>
+        </div>
+      </article>
+    </template>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

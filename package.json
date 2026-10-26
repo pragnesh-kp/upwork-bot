@@ -1,0 +1,33 @@
+{
+  "name": "upwork-job-alert-lite",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Self-hosted Upwork job alerts via the official Upwork MCP server and Telegram",
+  "type": "module",
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.1"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "typescript": "5.9.3"
+  },
+  "scripts": {
+    "connect": "node --disable-warning=ExperimentalWarning src/cli.ts connect",
+    "discover": "node --disable-warning=ExperimentalWarning src/cli.ts discover",
+    "filters": "node --disable-warning=ExperimentalWarning src/cli.ts filters",
+    "search": "node --disable-warning=ExperimentalWarning src/cli.ts search",
+    "watch": "node --disable-warning=ExperimentalWarning src/cli.ts watch",
+    "dashboard": "node --disable-warning=ExperimentalWarning src/cli.ts dashboard",
+    "background:install": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-background.ps1",
+    "background:uninstall": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-background.ps1 -Uninstall",
+    "test-telegram": "node --disable-warning=ExperimentalWarning src/cli.ts test-telegram",
+    "status": "node --disable-warning=ExperimentalWarning src/cli.ts status",
+    "purge": "node --disable-warning=ExperimentalWarning src/cli.ts purge",
+    "disconnect": "node --disable-warning=ExperimentalWarning src/cli.ts disconnect",
+    "test": "node --disable-warning=ExperimentalWarning --test \"test/**/*.test.ts\"",
+    "typecheck": "tsc -p tsconfig.json"
+  }
+}
