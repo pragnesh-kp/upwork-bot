@@ -18,6 +18,7 @@ test('on Vercel a missing database names the related settings it found, never th
   assert.throws(() => loadConfig({ VERCEL: '1', MY_DATABASE_URI: 'secret-value' } as NodeJS.ProcessEnv), (err: Error) => {
     assert.match(err.message, /TURSO_DATABASE_URL is not set/);
     assert.match(err.message, /MY_DATABASE_URI/);
+    assert.doesNotMatch(err.message, /VERCEL/);
     assert.doesNotMatch(err.message, /secret-value/);
     return true;
   });

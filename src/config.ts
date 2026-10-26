@@ -87,10 +87,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const turso = tursoSettings(env);
   const dbUrl = turso.url ?? (onVercel ? null : pathToFileURL(resolve(dataDir, 'local.db')).href);
   if (!dbUrl) {
-    // Names only (never values), to spot a misnamed setting.
-    const seen = Object.keys(env).filter((k) => /TURSO|LIBSQL|DATABASE/i.test(k) && str(env, k));
+    // Names only (never values), to spot a misnamed setting or a deployment made before the settings existed.
+    const seen = Object.keys(env)
+      .filter((k) => /TURSO|LIBSQL|DATABASE|STORAGE|_URL$|TOKEN|DASHBOARD|CRON|UPWORK/i.test(k) && !k.startsWith('VERCEL') && str(env, k))
+      .sort();
+    const version = str(env, 'VERCEL_GIT_COMMIT_SHA')?.slice(0, 7);
     throw new ConfigError(
-      `TURSO_DATABASE_URL is not set. In Vercel: connect a Turso database to this project (Storage), then Redeploy (see DEPLOY.md, steps 3-4). Related settings found: ${seen.length ? seen.join(', ') : 'none'}.`,
+      `TURSO_DATABASE_URL is not set. In Vercel: connect a Turso database to this project (Storage), then Redeploy (see DEPLOY.md, steps 3-4). Settings this deployment can see: ${seen.length ? seen.join(', ') : 'none'}.${version ? ` (code version ${version})` : ''}`,
     );
   }
   if (!/^(libsql|https?|wss?|file):/.test(dbUrl)) throw new ConfigError('TURSO_DATABASE_URL must start with libsql://, https:// or file:');
