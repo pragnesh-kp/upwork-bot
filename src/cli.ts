@@ -64,8 +64,14 @@ async function importLegacy(cfg: Config, store: Store, from: string) {
   const filtersFile = existsSync(join(dir, 'filters.json')) ? join(dir, 'filters.json') : resolve('filters.json');
   if (existsSync(filtersFile)) {
     let added = 0;
-    for (const f of loadFilters(filtersFile)) if (await store.addFilter({ name: f.name, url: f.url, enabled: f.enabled })) added++;
-    out(`Filters: ${added} added from ${filtersFile} (existing names kept).`);
+    const existing = await store.listFilters();
+    for (const f of loadFilters(filtersFile)) {
+      // Skip filters already added in the dashboard: same link, or same name in other capitals.
+      const dup = existing.find((e) => e.url.trim() === f.url.trim() || e.name.toLowerCase() === f.name.toLowerCase());
+      if (dup) out(`  kept "${dup.name}" (already in the dashboard${dup.url.trim() === f.url.trim() ? ', same link' : ''}); skipped "${f.name}"`);
+      else if (await store.addFilter({ name: f.name, url: f.url, enabled: f.enabled })) added++;
+    }
+    out(`Filters: ${added} added from ${filtersFile}.`);
   } else out('Filters: no filters.json found; add filters in the dashboard instead.');
 
   const data = existsSync(join(dir, 'data')) ? join(dir, 'data') : dir;
