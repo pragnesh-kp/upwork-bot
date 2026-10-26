@@ -6,7 +6,7 @@ import { getCycle, hasPendingWork, nextDueAt, progressOf, requestSearch, step, t
 import { defaultFilterName, filterProblems, MAX_FILTERS, parseUpworkSearchUrl, toFilterDefs } from '../filters.ts';
 import { log } from '../log.ts';
 import { loadDiscovery } from '../mcp/discover.ts';
-import { clientMetadata, finishUpworkSignIn, startUpworkSignIn } from '../mcp/web-auth.ts';
+import { finishUpworkSignInFromUrl, startUpworkSignIn } from '../mcp/web-auth.ts';
 
 const STATES = new Set(['new', 'saved', 'reviewed', 'dismissed']);
 const COOKIE = 'ja_session';
@@ -103,14 +103,6 @@ export function createHandler(deps: HandlerDeps): Handler {
   const clientIp = (req: IncomingMessage): string =>
     String(req.headers['x-forwarded-for'] ?? '').split(',')[0]?.trim() || String(req.headers['x-real-ip'] ?? '') || req.socket.remoteAddress || 'unknown';
 
-  /** This site's origin as the browser sees it (https on Vercel). */
-  const origin = (req: IncomingMessage): string => {
-    const proto = cfg.onVercel || req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http';
-    return `${proto}://${String(req.headers.host)}`;
-  };
-  /** Where Upwork sends the browser back to after signing in. */
-  const callbackUrl = (req: IncomingMessage): string => `${origin(req)}/api/upwork/callback`;
-
   const localHostOk = (req: IncomingMessage): boolean => /^(127\.0\.0\.1|localhost)(:\d+)?$/.test(String(req.headers.host ?? ''));
 
   /** Origin, when the browser sends one, must be this site. */
@@ -201,36 +193,6 @@ export function createHandler(deps: HandlerDeps): Handler {
       }
       if (req.method === 'POST' && path === '/api/logout') return send(res, 200, { ok: true }, { 'set-cookie': sessionCookie('', 0) });
 
-      // OAuth client metadata document (the site's client_id for "Connect Upwork"). Upwork only lets
-      // apps self-register loopback redirects; a hosted site identifies itself with this public URL.
-      if (req.method === 'GET' && path === '/api/upwork/client-metadata') {
-        const doc = clientMetadata(origin(req));
-        // Shows in the logs whether Upwork actually fetched it during a sign-in.
-        log.info('client metadata requested', { userAgent: String(req.headers['user-agent'] ?? '').slice(0, 120) });
-        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'public, max-age=300', ...SECURITY_HEADERS });
-        return void res.end(JSON.stringify(doc));
-      }
-
-      // Upwork's redirect back after "Connect Upwork". A SameSite=Strict cookie is not sent on this
-      // cross-site navigation, so the single-use OAuth state (created by a logged-in user) is the check.
-      if (req.method === 'GET' && path === '/api/upwork/callback') {
-        const back = (q: string) => {
-          res.writeHead(302, { location: `/?${q}`, 'cache-control': 'no-store', ...SECURITY_HEADERS });
-          res.end();
-        };
-        const upworkError = url.searchParams.get('error');
-        if (upworkError) return back(`upwork=error&message=${encodeURIComponent(`Upwork returned: ${upworkError.slice(0, 100)}`)}`);
-        try {
-          const d = await finishUpworkSignIn(cfg, store, callbackUrl(req), url.searchParams.get('code') ?? '', url.searchParams.get('state') ?? '');
-          log.info('Upwork connected from the dashboard', { account: d.account.name });
-          await requestSearch(store, null);
-          return back('upwork=connected');
-        } catch (err) {
-          log.error('Upwork sign-in failed', { error: (err as Error).message });
-          return back(`upwork=error&message=${encodeURIComponent((err as Error).message.slice(0, 300))}`);
-        }
-      }
-
       if (cfg.dashboardPassword && !loggedIn(req)) return send(res, 401, { error: 'Login required', loginRequired: true });
 
       // --- dashboard API ----------------------------------------------------------
@@ -260,7 +222,7 @@ export function createHandler(deps: HandlerDeps): Handler {
         }
         if (path === '/api/upwork/connect') {
           try {
-            const r = await startUpworkSignIn(cfg, store, callbackUrl(req));
+            const r = await startUpworkSignIn(cfg, store);
             if ('url' in r) return send(res, 200, { url: r.url });
             // The stored sign-in still works: nothing to sign in to; search with it.
             await requestSearch(store, null);
@@ -268,6 +230,18 @@ export function createHandler(deps: HandlerDeps): Handler {
           } catch (err) {
             log.error('Upwork sign-in could not start', { error: (err as Error).message });
             return send(res, 502, { error: `Could not start the Upwork sign-in: ${(err as Error).message}` });
+          }
+        }
+        // The address the browser landed on after "Allow" on Upwork (http://127.0.0.1/callback?code=…).
+        if (path === '/api/upwork/finish') {
+          try {
+            const d = await finishUpworkSignInFromUrl(cfg, store, typeof body.url === 'string' ? body.url : '');
+            log.info('Upwork connected from the dashboard', { account: d.account.name });
+            await requestSearch(store, null);
+            return send(res, 200, { connected: `${d.account.name} (${d.account.roleLabel})` });
+          } catch (err) {
+            log.error('Upwork sign-in failed', { error: (err as Error).message });
+            return send(res, 400, { error: (err as Error).message });
           }
         }
         if (path === '/api/step') {

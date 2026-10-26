@@ -51,33 +51,29 @@ Keep them somewhere safe (a password manager). Never put them on GitHub.
 
 Then **Deployments → ⋯ on the latest → Redeploy**, because settings apply only to new deployments.
 
-## 5. Move your filters, Upwork sign-in and saved jobs into Turso (PC)
+## 5. Connect Upwork (in the dashboard)
 
-**First stop the bot on your PC.** Only one copy may use the Upwork sign-in: when two places renew the same login, one of them gets signed out. In an **Administrator** PowerShell:
+**First stop the bot on your PC**, if it runs there. Only one place may use an Upwork sign-in: when two places renew the same login, one of them gets signed out. In an **Administrator** PowerShell:
 
 ```powershell
 Disable-ScheduledTask -TaskName UpworkJobAlertLite
 Stop-ScheduledTask -TaskName UpworkJobAlertLite
 ```
 
-Then put the two Turso values in your PC's `.env`. Copy them from Vercel → Settings → Environment Variables (click the eye icon to reveal):
+Then open your site, log in, and press **Connect Upwork**:
+
+1. Upwork's own sign-in opens in a new tab. Log in and click **Allow**.
+2. That tab then shows an error like *"This site can't be reached"* on an address starting with `http://127.0.0.1:53682/callback?code=…`. **That is expected.** Upwork only lets self-registered apps return to the computer they run on, and it refuses hosted sites.
+3. Copy the **whole address** from that tab, paste it into the box on the dashboard, and press **Finish** within a few minutes.
+
+The dashboard says *Upwork connected as …* and the first search starts. Add your searches with **+ Add filter**.
+
+**Optional: bring over your PC's filters and saved jobs.** Put the two Turso values in your PC's `.env` (Vercel → Settings → Environment Variables, eye icon), then run `npm run import`. It also copies the PC's Upwork sign-in, so you can skip Connect Upwork in that case.
 
 ```
 TURSO_DATABASE_URL=libsql://…
 TURSO_AUTH_TOKEN=…
 ```
-
-and run (**PC**):
-
-```powershell
-npm ci
-npm run import
-npm run status
-```
-
-`import` copies your filters, your encrypted Upwork sign-in, the discovered Upwork tool schema and your saved jobs into Turso. `status` should say `Database: Turso database …`, list your 3 filters, and show `Upwork: connected as …`.
-
-(Starting fresh instead? Run `npm run connect` and `npm run discover` with the Turso values in `.env`, then add filters in the dashboard.)
 
 ## 6. Set up the scheduler (cron-job.org)
 
@@ -110,7 +106,7 @@ Open **https://upwork.pelicanstechnologies.com** and enter your `DASHBOARD_PASSW
 | Update the bot | Push to `main` on GitHub; Vercel deploys automatically. |
 | Logs | Vercel project → **Logs**. |
 | Change the password | Change `DASHBOARD_PASSWORD` in Vercel, then Redeploy. Everyone is signed out. |
-| Upwork asks to sign in again (`Upwork authorization expired…` on the dashboard) | On the PC, with the Turso values in `.env`: `npm run connect`, then `npm run discover`. |
+| Upwork asks to sign in again (`Upwork sign-in expired…` on the dashboard) | Press **Reconnect Upwork** on the dashboard (step 5). |
 | Check from the PC | `npm run status` / `npm run filters` (with the Turso values in `.env`). |
 | Pause searching | Disable the job in cron-job.org. |
 

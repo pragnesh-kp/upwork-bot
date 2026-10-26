@@ -186,21 +186,19 @@ test('"Search now" searches the chosen filter; review states filter the list', a
   }
 });
 
-test('"Connect Upwork": needs a login to start; the callback accepts only its own single-use state', async () => {
+test('"Connect Upwork": needs a login; finishing accepts only a loopback callback with its own single-use state', async () => {
   const t = await start();
   try {
     assert.equal((await t.call('POST', '/api/upwork/connect', { body: {} })).status, 401);
-    const meta = await t.call('GET', '/api/upwork/client-metadata');
-    assert.equal(meta.status, 200);
-    assert.match(String(meta.body.client_id), /^http:\/\/127\.0\.0\.1:\d+\/api\/upwork\/client-metadata$/);
-    assert.deepEqual(meta.body.redirect_uris, [String(meta.body.client_id).replace('client-metadata', 'callback')]);
-
-    // A forged or replayed callback never reaches Upwork and is sent back to the dashboard with an error.
-    const forged = await t.call('GET', '/api/upwork/callback?code=abc&state=forged');
-    assert.equal(forged.status, 302);
-    assert.match(String(forged.headers.location), /^\/\?upwork=error&message=.*already%20used/);
-    const denied = await t.call('GET', '/api/upwork/callback?error=access_denied');
-    assert.match(String(denied.headers.location), /upwork=error&message=Upwork%20returned%3A%20access_denied/);
+    assert.equal((await t.call('POST', '/api/upwork/finish', { body: { url: 'http://127.0.0.1:53682/callback?code=a&state=b' } })).status, 401);
+    await t.login();
+    const finish = async (url: string) => String((await t.call('POST', '/api/upwork/finish', { body: { url } })).body.error);
+    assert.match(await finish('not a url'), /not a web address/);
+    assert.match(await finish('https://evil.example/callback?code=a&state=b'), /not the address Upwork sent you to/);
+    assert.match(await finish('http://127.0.0.1:53682/callback?error=access_denied'), /Upwork returned: access_denied/);
+    assert.match(await finish('http://127.0.0.1:53682/callback?state=x'), /no sign-in code/);
+    // A code from another (or a finished) attempt never reaches Upwork.
+    assert.match(await finish('http://127.0.0.1:53682/callback?code=abc&state=forged'), /older or already finished attempt/);
   } finally {
     await t.close();
   }

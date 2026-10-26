@@ -393,38 +393,61 @@ $('add-filter').addEventListener('submit', async (e) => {
 
 $('connect-upwork').addEventListener('click', async () => {
   const btn = $('connect-upwork');
+  // Opened right away (inside the click) so the browser doesn't block it as a pop-up.
+  const tab = window.open('about:blank', '_blank');
   btn.disabled = true;
-  btn.textContent = 'Opening Upwork…';
   try {
     const r = await api('/api/upwork/connect', {});
     if (r.url) {
-      // Upwork's own sign-in page; Upwork sends you back here afterwards.
-      location.href = r.url;
-      return;
+      if (tab) {
+        tab.opener = null; // the Upwork tab can't reach back into this page
+        tab.location.href = r.url;
+      }
+      $('connect-link').href = r.url;
+      $('connect-msg').hidden = true;
+      $('connect-url').value = '';
+      $('connect-panel').hidden = false;
+      $('connect-url').focus();
+    } else {
+      tab?.close();
+      showNotice(`Upwork is already connected as ${r.connected}. Searching now…`);
+      await refresh();
     }
-    showNotice(`Upwork is already connected as ${r.connected}. Searching now…`);
+  } catch (err) {
+    tab?.close();
+    if (!(err instanceof LoginRequired)) showRunResult(null, err.message);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+$('connect-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const msg = $('connect-msg');
+  const submit = e.target.querySelector('button[type="submit"]');
+  submit.disabled = true;
+  msg.hidden = true;
+  try {
+    const r = await api('/api/upwork/finish', { url: $('connect-url').value.trim() });
+    $('connect-panel').hidden = true;
+    showNotice(`Upwork connected as ${r.connected}. The first search is running now; jobs appear as it finishes.`);
     await refresh();
   } catch (err) {
-    if (!(err instanceof LoginRequired)) showRunResult(null, err.message);
+    if (!(err instanceof LoginRequired)) {
+      msg.hidden = false;
+      msg.textContent = err.message;
+    }
+  } finally {
+    submit.disabled = false;
   }
-  btn.disabled = false;
 });
+$('connect-cancel').addEventListener('click', () => void ($('connect-panel').hidden = true));
 
 function showNotice(text, isError = false) {
   const box = $('run-result');
   box.hidden = false;
   box.className = `run-result${isError ? ' error' : ''}`;
   box.replaceChildren(el('strong', {}, text));
-}
-
-/** Result of "Connect Upwork" after Upwork redirects back (?upwork=connected|error). */
-function handleSignInReturn() {
-  const q = new URLSearchParams(location.search);
-  const result = q.get('upwork');
-  if (!result) return;
-  history.replaceState(null, '', location.pathname);
-  if (result === 'connected') showNotice('Upwork connected. The first search is running now; jobs appear as it finishes.');
-  else showNotice(`Upwork sign-in failed: ${q.get('message') || 'unknown error'}`, true);
 }
 
 $('login-form').addEventListener('submit', async (e) => {
@@ -456,7 +479,6 @@ async function start() {
   $('login').hidden = true;
   $('app').hidden = false;
   $('logout').hidden = false;
-  handleSignInReturn();
   if (!started) {
     started = true;
     setInterval(() => refresh().catch(() => {}), 30000);

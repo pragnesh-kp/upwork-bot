@@ -37,6 +37,21 @@
 
     <div id="run-result" class="run-result" hidden></div>
 
+    <section id="connect-panel" class="connect-panel" hidden>
+      <h2>Connect Upwork</h2>
+      <ol>
+        <li>In the Upwork tab that just opened (<a id="connect-link" target="_blank" rel="noopener noreferrer">open it again</a>), log in and click <strong>Allow</strong>.</li>
+        <li>That tab then shows an error such as <em>"This site can't be reached"</em> on an address starting with <code>http://127.0.0.1</code>. That is expected.</li>
+        <li>Copy the <strong>whole address</strong> from that tab's address bar, paste it here, and press <strong>Finish</strong> (within a few minutes).</li>
+      </ol>
+      <form id="connect-form" autocomplete="off">
+        <input id="connect-url" type="text" required placeholder="http://127.0.0.1:53682/callback?code=…&amp;state=…" aria-label="Address from the Upwork tab" />
+        <button class="primary" type="submit">Finish</button>
+        <button id="connect-cancel" type="button">Cancel</button>
+      </form>
+      <p id="connect-msg" class="add-msg err" hidden></p>
+    </section>
+
     <div class="layout">
       <nav class="sidebar" aria-label="Filters">
         <h2>Filters</h2>

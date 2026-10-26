@@ -176,3 +176,10 @@ button.link.danger { color: #dc2626; }
 .login-box h1 { margin: 0 0 8px; font-size: 20px; }
 .login-box label { font-size: 13px; color: var(--muted); }
 .login-box input { font: inherit; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); color: inherit; }
+.connect-panel { margin: 12px 20px 0; padding: 14px 16px; background: var(--panel); border: 1px solid var(--accent); border-radius: var(--radius); }
+.connect-panel[hidden] { display: none; }
+.connect-panel h2 { margin: 0 0 6px; }
+.connect-panel ol { margin: 0 0 10px; padding-left: 20px; font-size: 14px; line-height: 1.5; }
+.connect-panel code { font-size: 12px; }
+.connect-panel form { display: flex; gap: 8px; flex-wrap: wrap; }
+.connect-panel input { flex: 1 1 320px; font: inherit; padding: 6px 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); color: inherit; }
