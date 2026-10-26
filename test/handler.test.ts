@@ -185,3 +185,23 @@ test('"Search now" searches the chosen filter; review states filter the list', a
     await t.close();
   }
 });
+
+test('"Connect Upwork": needs a login to start; the callback accepts only its own single-use state', async () => {
+  const t = await start();
+  try {
+    assert.equal((await t.call('POST', '/api/upwork/connect', { body: {} })).status, 401);
+    const meta = await t.call('GET', '/api/upwork/client-metadata');
+    assert.equal(meta.status, 200);
+    assert.match(String(meta.body.client_id), /^http:\/\/127\.0\.0\.1:\d+\/api\/upwork\/client-metadata$/);
+    assert.deepEqual(meta.body.redirect_uris, [String(meta.body.client_id).replace('client-metadata', 'callback')]);
+
+    // A forged or replayed callback never reaches Upwork and is sent back to the dashboard with an error.
+    const forged = await t.call('GET', '/api/upwork/callback?code=abc&state=forged');
+    assert.equal(forged.status, 302);
+    assert.match(String(forged.headers.location), /^\/\?upwork=error&message=.*already%20used/);
+    const denied = await t.call('GET', '/api/upwork/callback?error=access_denied');
+    assert.match(String(denied.headers.location), /upwork=error&message=Upwork%20returned%3A%20access_denied/);
+  } finally {
+    await t.close();
+  }
+});

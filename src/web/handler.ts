@@ -205,6 +205,8 @@ export function createHandler(deps: HandlerDeps): Handler {
       // apps self-register loopback redirects; a hosted site identifies itself with this public URL.
       if (req.method === 'GET' && path === '/api/upwork/client-metadata') {
         const doc = clientMetadata(origin(req));
+        // Shows in the logs whether Upwork actually fetched it during a sign-in.
+        log.info('client metadata requested', { userAgent: String(req.headers['user-agent'] ?? '').slice(0, 120) });
         res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'public, max-age=300', ...SECURITY_HEADERS });
         return void res.end(JSON.stringify(doc));
       }
