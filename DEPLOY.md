@@ -1,197 +1,135 @@
-# Deploying on a Hostinger VPS
+# Deploying on Vercel
 
-Run the bot 24/7 on a Linux VPS (Hostinger KVM 1 or higher, Ubuntu 24.04). It runs as a `systemd` service: it starts at boot, searches every ~30 minutes, and restarts itself after a crash or reboot.
+The dashboard and the searches run on **Vercel** (free Hobby plan). The data lives in **Turso** (free hosted database). **cron-job.org** (free) calls the bot every 5 minutes so it searches about every 30 minutes, and your subdomain **upwork.pelicanstechnologies.com** points to it.
 
-> **Web / shared hosting plans won't work.** They stop long-running background programs. You need a VPS.
-
-You run the commands in boxes marked **PC** in PowerShell on your Windows PC, and the ones marked **server** in an SSH session on the VPS (`ssh root@YOUR_SERVER_IP`; the IP and root password are in hPanel → VPS).
-
-## 1. Install Node.js 24 (server)
-
-```bash
-apt update && apt -y upgrade
-apt -y install git curl
-curl -fsSL https://deb.nodesource.com/setup_24.x | bash -
-apt -y install nodejs
-node -v    # must print v24.x (v22.18+ also works)
+```
+cron-job.org ──every 5 min──▶ https://upwork.pelicanstechnologies.com/api/cron ─┐
+your browser ──password────▶ https://upwork.pelicanstechnologies.com            ├─ Vercel functions ─▶ Turso database
+                                                                                 └─ Upwork MCP (official)
 ```
 
-## 2. Get the code from your private GitHub repo (server)
+Each call does about 20 seconds of work and saves its place, so a search that needs longer simply continues on the next call. While the dashboard is open, the page pushes searches forward itself.
 
-The repo is private, so give the server a read-only **deploy key**:
+> **Vercel Hobby is for personal, non-commercial use.** If this runs for your company's business, Vercel's terms may require the Pro plan. Check [vercel.com/docs/plans/hobby](https://vercel.com/docs/plans/hobby).
 
-```bash
-ssh-keygen -t ed25519 -N "" -f ~/.ssh/upwork_bot_deploy
-cat ~/.ssh/upwork_bot_deploy.pub
-```
+PowerShell commands marked **PC** run on your Windows PC, in `C:\Users\Admin\Desktop\upwork-bot\job-alert-lite`.
 
-Copy the printed line to GitHub: repo → **Settings → Deploy keys → Add deploy key** (leave "Allow write access" off). Then:
+## 1. Prepare three secrets (PC)
 
-```bash
-cat >> ~/.ssh/config <<'EOF'
-Host github-upwork-bot
-  HostName github.com
-  User git
-  IdentityFile ~/.ssh/upwork_bot_deploy
-EOF
-git clone github-upwork-bot:Pelicans-Technologies/upwork-bot.git /opt/upwork-bot
-cd /opt/upwork-bot
-npm ci --omit=dev
-```
-
-## 3. Copy your settings and Upwork sign-in from the PC
-
-Your `.env`, `filters.json` and `data\` folder are deliberately **not** on GitHub (they hold your encryption key and Upwork sign-in). Copy them from the PC.
-
-**First stop the bot on your PC.** Only one copy may use the Upwork sign-in: when two machines refresh the same login, one of them gets signed out. In an **Administrator** PowerShell:
-
-```powershell
-Disable-ScheduledTask -TaskName UpworkJobAlertLite   # if you installed the background task
-# and press Ctrl+C in any window running "npm run watch"
-```
-
-Then copy (**PC**, normal PowerShell):
-
-```powershell
-cd C:\Users\Admin\Desktop\upwork-bot\job-alert-lite
-ssh root@YOUR_SERVER_IP "mkdir -p /opt/upwork-bot/data"
-scp .env filters.json root@YOUR_SERVER_IP:/opt/upwork-bot/
-scp data\upwork-oauth.enc data\discovery.json data\jobs.sqlite root@YOUR_SERVER_IP:/opt/upwork-bot/data/
-```
-
-(`data\jobs.sqlite` is optional. It keeps the jobs you already have. Without it, the server starts from zero.)
-
-## 4. Start the service (server)
-
-```bash
-adduser --system --group --home /opt/upwork-bot --no-create-home upworkbot
-chown -R upworkbot:upworkbot /opt/upwork-bot
-chmod 600 /opt/upwork-bot/.env /opt/upwork-bot/data/*
-cp /opt/upwork-bot/deploy/upwork-job-alert.service /etc/systemd/system/
-systemctl daemon-reload
-systemctl enable --now upwork-job-alert
-systemctl status upwork-job-alert --no-pager
-```
-
-Watch the first search finish:
-
-```bash
-journalctl -u upwork-job-alert -f     # Ctrl+C to stop watching (the bot keeps running)
-```
-
-You should see `watch: search finished … "status":"ok"` within a few minutes.
-
-## 5. Open the dashboard (PC)
-
-The dashboard only listens on the server itself and has no password of its own, so it is **not** published on the internet by itself. Either open it through an SSH tunnel (below), or give it a password-protected web address (section 6).
-
-```powershell
-ssh -N -L 5174:127.0.0.1:5174 root@YOUR_SERVER_IP
-```
-
-Leave that window open and browse to **http://127.0.0.1:5174** on your PC. Closing the window only closes your view; the bot keeps running on the server.
-
-## 6. Optional: open it at https://upwork.pelicanstechnologies.com (password protected)
-
-This makes the dashboard reachable from any browser or phone, over HTTPS and behind a username and password. **Caddy** (a free web server) gets the HTTPS certificate automatically and asks for the password. The bot itself keeps listening only on the server.
-
-> In every command and in the config below, replace `upwork.pelicanstechnologies.com` with your exact subdomain if you use a different one.
-
-**a) DNS (hPanel → Domains → your domain → DNS / Nameservers).** Add a record: Type **A**, Name **upwork**, Value **your VPS IPv4** (hPanel → VPS → Overview), TTL 300 or 14400. Check it on the PC; the answer must be your VPS IP:
-
-```powershell
-nslookup upwork.pelicanstechnologies.com
-```
-
-**b) Install Caddy (server):**
-
-```bash
-apt -y install debian-keyring debian-archive-keyring apt-transport-https curl gnupg
-curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' > /etc/apt/sources.list.d/caddy-stable.list
-apt update && apt -y install caddy
-```
-
-**c) Create the password (server).** Pick a long password (12+ characters); this page can add and remove your filters.
-
-```bash
-caddy hash-password
-```
-
-Type the password twice. It prints a hash starting with `$2a$`. Copy it.
-
-**d) Write the config (server).** Paste your hash in place of `PASTE_HASH_HERE`, and pick a username (here `admin`):
-
-```bash
-cat > /etc/caddy/Caddyfile <<'EOF'
-upwork.pelicanstechnologies.com {
-	basic_auth {
-		admin PASTE_HASH_HERE
-	}
-	reverse_proxy 127.0.0.1:5174 {
-		# The dashboard only accepts requests addressed to 127.0.0.1 (DNS-rebinding protection).
-		header_up Host 127.0.0.1:5174
-	}
-	encode gzip
-	header Strict-Transport-Security "max-age=31536000"
-}
-EOF
-nano /etc/caddy/Caddyfile        # paste the hash, save with Ctrl+O, Enter, Ctrl+X
-caddy validate --config /etc/caddy/Caddyfile
-systemctl reload caddy
-```
-
-**e) Firewall (server).** Open only SSH and the web ports. Never open 5174.
-
-```bash
-ufw allow OpenSSH
-ufw allow 80/tcp
-ufw allow 443/tcp
-ufw --force enable
-ufw status
-```
-
-If hPanel → VPS → **Firewall** has rules turned on, allow TCP 80 and 443 there too.
-
-**f) Open it.** Browse to **https://upwork.pelicanstechnologies.com**. The browser asks for the username and password, then shows the dashboard. The first visit can take up to a minute while Caddy fetches the certificate.
-
-If it doesn't load, `journalctl -u caddy -n 50 --no-pager` shows why. The usual causes are DNS not pointing to the VPS yet, or ports 80/443 blocked.
-
-**Change the password later:** run `caddy hash-password` again, replace the hash in `/etc/caddy/Caddyfile`, then `systemctl reload caddy`.
-
-## Everyday commands (server)
-
-| What | Command |
+| Variable | What to use |
 | --- | --- |
-| Status | `systemctl status upwork-job-alert --no-pager` |
-| Live log | `journalctl -u upwork-job-alert -f` (or `tail -f /opt/upwork-bot/data/app.log`) |
-| Restart (after editing `.env`) | `systemctl restart upwork-job-alert` |
-| Stop / start | `systemctl stop upwork-job-alert` / `systemctl start upwork-job-alert` |
-| Update to the latest code | `cd /opt/upwork-bot && git pull && npm ci --omit=dev && chown -R upworkbot:upworkbot . && systemctl restart upwork-job-alert` |
+| `TOKEN_ENCRYPTION_KEY` | **The same value that is already in your `.env`.** It encrypts your Upwork sign-in; a different key can't read the one you already have. |
+| `DASHBOARD_PASSWORD` | A password you choose, 12+ characters. It protects the dashboard. |
+| `CRON_SECRET` | A random value: `node -e "console.log(require('crypto').randomBytes(24).toString('base64url'))"` |
 
-Filters added or removed in the dashboard are saved on the server (`/opt/upwork-bot/filters.json`) and survive restarts and updates.
+Keep them somewhere safe (a password manager). Never put them on GitHub.
 
-## If Upwork asks you to sign in again
+## 2. Create the Vercel project
 
-If the log shows `Upwork authorization expired or was revoked`, sign in again **through a tunnel** so Upwork's redirect reaches the server.
+1. Sign in at [vercel.com](https://vercel.com) (you can use your GitHub account).
+2. **Add New → Project → Import Git Repository**, then pick **Pelicans-Technologies/upwork-bot**. If it isn't listed, use "Adjust GitHub App Permissions" to give Vercel access to that private repo.
+3. Framework Preset: **Other**. Leave the build settings alone; `vercel.json` sets them (`npm ci`, `npm run build`).
+4. Click **Deploy**. The first deployment works, but the site reports missing settings until steps 3–4 are done.
 
-On the **PC**:
+## 3. Add the Turso database
+
+1. In the Vercel project: **Storage → Create Database → Turso** (Marketplace). Choose the free plan and a region close to your Vercel functions (Vercel's default is Washington D.C., `iad1`, so pick US East).
+2. Connect it to this project. It adds the environment variables **`TURSO_DATABASE_URL`** and **`TURSO_AUTH_TOKEN`**.
+3. Check **Settings → Environment Variables**. If the integration used other names, add `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN` yourself, with the same values.
+
+## 4. Add your settings to Vercel
+
+**Settings → Environment Variables**, environment **Production**:
+
+| Name | Value |
+| --- | --- |
+| `TOKEN_ENCRYPTION_KEY` | from step 1 |
+| `DASHBOARD_PASSWORD` | from step 1 |
+| `CRON_SECRET` | from step 1 |
+| `SEARCH_INTERVAL_MINUTES` | `30` (optional) |
+| `UPWORK_ACCOUNT_NAME` | only if you set it in `.env` |
+
+Then **Deployments → ⋯ on the latest → Redeploy**, because settings apply only to new deployments.
+
+## 5. Move your filters, Upwork sign-in and saved jobs into Turso (PC)
+
+**First stop the bot on your PC.** Only one copy may use the Upwork sign-in: when two places renew the same login, one of them gets signed out. In an **Administrator** PowerShell:
 
 ```powershell
-ssh -L 53682:127.0.0.1:53682 root@YOUR_SERVER_IP
+Disable-ScheduledTask -TaskName UpworkJobAlertLite
+Stop-ScheduledTask -TaskName UpworkJobAlertLite
 ```
 
-Then in that SSH session (**server**):
+Then put the two Turso values in your PC's `.env`. Copy them from Vercel → Settings → Environment Variables (click the eye icon to reveal):
 
-```bash
-cd /opt/upwork-bot
-sudo -u upworkbot npm run connect
+```
+TURSO_DATABASE_URL=libsql://…
+TURSO_AUTH_TOKEN=…
 ```
 
-Copy the printed `https://www.upwork.com/...` link into your PC's browser and sign in. Upwork redirects to `127.0.0.1:53682`, the tunnel carries it to the server, and the bot saves the new sign-in. Then run `systemctl restart upwork-job-alert`.
+and run (**PC**):
+
+```powershell
+npm ci
+npm run import
+npm run status
+```
+
+`import` copies your filters, your encrypted Upwork sign-in, the discovered Upwork tool schema and your saved jobs into Turso. `status` should say `Database: Turso database …`, list your 3 filters, and show `Upwork: connected as …`.
+
+(Starting fresh instead? Run `npm run connect` and `npm run discover` with the Turso values in `.env`, then add filters in the dashboard.)
+
+## 6. Set up the scheduler (cron-job.org)
+
+1. Create a free account at [cron-job.org](https://cron-job.org) and choose **Create cronjob**.
+2. **URL:** `https://upwork.pelicanstechnologies.com/api/cron`. Until your domain works (step 7), use the `https://<project>.vercel.app/api/cron` address Vercel shows.
+3. **Schedule:** every **5 minutes**.
+4. **Advanced → Headers:** add header `Authorization` with value `Bearer YOUR_CRON_SECRET` (the word `Bearer`, a space, then your secret).
+5. Request method **GET**, then save. Use **Test run**: the response should be `200` with a body like `{"status":"finished",…}` or `{"status":"idle"}`.
+
+Most calls do nothing and return `idle`. A search starts when 30 minutes have passed since the last one, and runs over a few calls. If cron-job.org shows `401`, the header is wrong. The dashboard's top line warns when the scheduler hasn't called for over 30 minutes.
+
+(Vercel also calls `/api/cron` once a day by itself, as a backup only.)
+
+## 7. Point upwork.pelicanstechnologies.com at Vercel
+
+1. Vercel project → **Settings → Domains → Add** → `upwork.pelicanstechnologies.com`. Vercel shows a **CNAME** record to create, usually `cname.vercel-dns.com`. **Use exactly the value Vercel shows.**
+2. In **hPanel → Domains → pelicanstechnologies.com → DNS / Nameservers**:
+   - If you already added an **A** record named `upwork`, delete it.
+   - Add: Type **CNAME**, Name **upwork**, Target **the value from Vercel**, TTL **300**.
+3. Wait until Vercel shows **Valid Configuration** (minutes, sometimes up to a few hours). Vercel issues the HTTPS certificate automatically.
+
+## 8. Log in
+
+Open **https://upwork.pelicanstechnologies.com** and enter your `DASHBOARD_PASSWORD`. Everything works as before: filters, Add filter / Remove, calendar, search, Save / Reviewed / Dismiss, **Search now**.
+
+## Everyday
+
+| What | How |
+| --- | --- |
+| Update the bot | Push to `main` on GitHub; Vercel deploys automatically. |
+| Logs | Vercel project → **Logs**. |
+| Change the password | Change `DASHBOARD_PASSWORD` in Vercel, then Redeploy. Everyone is signed out. |
+| Upwork asks to sign in again (`Upwork authorization expired…` on the dashboard) | On the PC, with the Turso values in `.env`: `npm run connect`, then `npm run discover`. |
+| Check from the PC | `npm run status` / `npm run filters` (with the Turso values in `.env`). |
+| Pause searching | Disable the job in cron-job.org. |
+
+## Troubleshooting
+
+| Message | Fix |
+| --- | --- |
+| `TURSO_DATABASE_URL is not set` | Step 3, then Redeploy. |
+| `Set DASHBOARD_PASSWORD…` | Step 4, then Redeploy. |
+| Dashboard: `⚠ the scheduler has not called yet` | Step 6. Check the URL and the `Authorization` header. |
+| cron-job.org: `401` | The header must be exactly `Bearer <CRON_SECRET>`, matching Vercel's value. |
+| `Cannot decrypt the stored Upwork sign-in` | `TOKEN_ENCRYPTION_KEY` in Vercel differs from the one used for `import`/`connect`. Make them equal, or run `npm run connect` again. |
+
+## Local development
+
+`npm run dev` runs the same dashboard and API at http://127.0.0.1:5174, plus a local stand-in for the scheduler. Without Turso values in `.env`, it uses a local database file (`data/local.db`). `npm run build` produces exactly what Vercel deploys (`.vercel/output`).
 
 ## Notes
 
-* The server clock is UTC. The dashboard shows dates and times in your browser's time zone.
-* Upwork's terms: see the warning at the top of README.md. The same risk applies on a server.
-* Keep the repo **private**, and never commit `.env` or `data/`.
+* Upwork's terms: see the warning at the top of README.md. It applies on Vercel too.
+* Job data is deleted after `RETENTION_DAYS` (at most 30, per Upwork's terms).
+* Keep the repo **private**, and never commit `.env`.

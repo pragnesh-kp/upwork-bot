@@ -1,4 +1,4 @@
-import { readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import type { Job } from './sources/types.ts';
 
 export type ContractType = 'HOURLY' | 'FIXED';
@@ -166,23 +166,24 @@ export function defaultFilterName(c: Criteria, n: number): string {
   return k ? k.replace(/\b\w/g, (ch) => ch.toUpperCase()).slice(0, 60) : `Upwork filter ${n}`;
 }
 
-/** Writes filters.json atomically (a crash never leaves a half-written file). */
-export function saveFilters(path: string, filters: { name: string; url: string; enabled: boolean }[]): void {
-  const body = `[\n${filters.map((f) => `  ${JSON.stringify({ name: f.name, url: f.url, enabled: f.enabled })}`).join(',\n')}\n]\n`;
-  writeFileSync(`${path}.tmp`, body);
-  renameSync(`${path}.tmp`, path);
-}
+export const MAX_FILTERS = 25;
 
+/** Reads a filters.json file (used by `npm run import` to move filters into the database). */
 export function loadFilters(path: string): FilterDef[] {
   let raw: unknown;
   try {
     raw = JSON.parse(readFileSync(path, 'utf8'));
   } catch (err) {
-    throw new Error(`Cannot read filters file ${path}: ${(err as Error).message}. Copy filters.example.json to filters.json.`);
+    throw new Error(`Cannot read filters file ${path}: ${(err as Error).message}`);
   }
   const list = Array.isArray(raw) ? raw : (raw as { filters?: unknown }).filters;
   if (!Array.isArray(list)) throw new Error('filters.json must be an array of { "name", "url", "enabled" }');
-  if (list.length > 25) throw new Error('At most 25 filters are supported');
+  return toFilterDefs(list);
+}
+
+/** Validates stored filters (name, url, enabled) and parses each URL. */
+export function toFilterDefs(list: unknown[]): FilterDef[] {
+  if (list.length > MAX_FILTERS) throw new Error(`At most ${MAX_FILTERS} filters are supported`);
   const names = new Set<string>();
   return list.map((f, i) => {
     const item = f as { name?: unknown; url?: unknown; enabled?: unknown };

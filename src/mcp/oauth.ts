@@ -1,8 +1,6 @@
 import { spawn } from 'node:child_process';
 import { createCipheriv, createDecipheriv, randomBytes, timingSafeEqual } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
-import { dirname } from 'node:path';
 import type { OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.js';
 import type { OAuthClientInformationMixed, OAuthClientMetadata, OAuthTokens } from '@modelcontextprotocol/sdk/shared/auth.js';
 import { log } from '../log.ts';
@@ -14,47 +12,55 @@ interface Vault {
   state?: string;
 }
 
+/** Where the encrypted vault text lives (a database row in production, memory in tests). */
+export interface VaultStorage {
+  load(): Promise<string | null>;
+  save(text: string): Promise<void>;
+  remove(): Promise<void>;
+}
+
 /**
- * Encrypted (AES-256-GCM) local store for the OAuth client registration and
- * tokens. Upwork's terms treat these tokens as sensitive; they currently grant
- * the full MCP scope set for your account, so the file is encrypted with
- * TOKEN_ENCRYPTION_KEY and never logged.
+ * Encrypted (AES-256-GCM) store for the OAuth client registration and tokens.
+ * Upwork's terms treat these tokens as sensitive; they currently grant the full
+ * MCP scope set for your account, so they are encrypted with
+ * TOKEN_ENCRYPTION_KEY before they are stored, and never logged. The text
+ * format ("iv.tag.data", base64url) is the same as the old data/upwork-oauth.enc file.
  */
 export class TokenVault {
-  private readonly path: string;
+  private readonly storage: VaultStorage;
   private readonly key: Buffer;
-  constructor(path: string, key: Buffer) {
-    this.path = path;
+  constructor(storage: VaultStorage, key: Buffer) {
+    this.storage = storage;
     this.key = key;
   }
 
-  read(): Vault {
-    if (!existsSync(this.path)) return {};
-    const [iv, tag, data] = readFileSync(this.path, 'utf8').trim().split('.');
-    if (!iv || !tag || !data) throw new Error('Token file is corrupt; run "npm run disconnect" then "npm run connect"');
+  async read(): Promise<Vault> {
+    const text = await this.storage.load();
+    if (!text) return {};
+    const [iv, tag, data] = text.trim().split('.');
+    if (!iv || !tag || !data) throw new Error('Stored Upwork sign-in is corrupt; run "npm run disconnect" then "npm run connect"');
     try {
       const d = createDecipheriv('aes-256-gcm', this.key, Buffer.from(iv, 'base64url'));
       d.setAuthTag(Buffer.from(tag, 'base64url'));
       return JSON.parse(Buffer.concat([d.update(Buffer.from(data, 'base64url')), d.final()]).toString('utf8')) as Vault;
     } catch {
-      throw new Error('Cannot decrypt the token file (TOKEN_ENCRYPTION_KEY changed?). Run "npm run disconnect" then "npm run connect".');
+      throw new Error('Cannot decrypt the stored Upwork sign-in (TOKEN_ENCRYPTION_KEY changed?). Run "npm run disconnect" then "npm run connect".');
     }
   }
 
-  write(v: Vault): void {
-    mkdirSync(dirname(this.path), { recursive: true });
+  async write(v: Vault): Promise<void> {
     const iv = randomBytes(12);
     const c = createCipheriv('aes-256-gcm', this.key, iv);
     const enc = Buffer.concat([c.update(JSON.stringify(v), 'utf8'), c.final()]);
-    writeFileSync(this.path, [iv, c.getAuthTag(), enc].map((b) => b.toString('base64url')).join('.'), { mode: 0o600 });
+    await this.storage.save([iv, c.getAuthTag(), enc].map((b) => b.toString('base64url')).join('.'));
   }
 
-  update(patch: Partial<Vault>): void {
-    this.write({ ...this.read(), ...patch });
+  async update(patch: Partial<Vault>): Promise<void> {
+    await this.write({ ...(await this.read()), ...patch });
   }
 
-  delete(): void {
-    rmSync(this.path, { force: true });
+  async delete(): Promise<void> {
+    await this.storage.remove();
   }
 }
 
@@ -102,39 +108,39 @@ export class LocalOAuthProvider implements OAuthClientProvider {
     };
   }
 
-  state(): string {
+  async state(): Promise<string> {
     const state = randomBytes(24).toString('base64url');
-    this.vault.update({ state });
+    await this.vault.update({ state });
     return state;
   }
 
-  clientInformation() {
-    return this.vault.read().client;
+  async clientInformation() {
+    return (await this.vault.read()).client;
   }
-  saveClientInformation(client: OAuthClientInformationMixed) {
-    this.vault.update({ client });
+  async saveClientInformation(client: OAuthClientInformationMixed) {
+    await this.vault.update({ client });
   }
-  tokens() {
-    return this.vault.read().tokens;
+  async tokens() {
+    return (await this.vault.read()).tokens;
   }
-  saveTokens(tokens: OAuthTokens) {
-    this.vault.update({ tokens });
+  async saveTokens(tokens: OAuthTokens) {
+    await this.vault.update({ tokens });
   }
-  saveCodeVerifier(codeVerifier: string) {
-    this.vault.update({ codeVerifier });
+  async saveCodeVerifier(codeVerifier: string) {
+    await this.vault.update({ codeVerifier });
   }
-  codeVerifier(): string {
-    const v = this.vault.read().codeVerifier;
+  async codeVerifier(): Promise<string> {
+    const v = (await this.vault.read()).codeVerifier;
     if (!v) throw new Error('Missing PKCE code verifier; run "npm run connect" again');
     return v;
   }
 
-  invalidateCredentials(scope: 'all' | 'client' | 'tokens' | 'verifier' | 'discovery') {
-    const v = this.vault.read();
-    if (scope === 'all') this.vault.write({});
-    else if (scope === 'client') this.vault.write({ ...v, client: undefined, tokens: undefined });
-    else if (scope === 'tokens') this.vault.write({ ...v, tokens: undefined });
-    else if (scope === 'verifier') this.vault.write({ ...v, codeVerifier: undefined });
+  async invalidateCredentials(scope: 'all' | 'client' | 'tokens' | 'verifier' | 'discovery') {
+    const v = await this.vault.read();
+    if (scope === 'all') await this.vault.write({});
+    else if (scope === 'client') await this.vault.write({ ...v, client: undefined, tokens: undefined });
+    else if (scope === 'tokens') await this.vault.write({ ...v, tokens: undefined });
+    else if (scope === 'verifier') await this.vault.write({ ...v, codeVerifier: undefined });
   }
 
   redirectToAuthorization(url: URL): void {
@@ -149,13 +155,13 @@ export class LocalOAuthProvider implements OAuthClientProvider {
   waitForCallback(timeoutMs = 5 * 60_000): Promise<string> {
     return new Promise((resolve, reject) => {
       let settled = false;
-      const server = createServer((req, res) => {
+      const server = createServer(async (req, res) => {
         const u = new URL(req.url ?? '/', this.redirectUrl);
         if (u.pathname !== '/callback' || settled) {
           res.writeHead(404, { connection: 'close' }).end();
           return;
         }
-        const expected = this.vault.read().state ?? '';
+        const expected = (await this.vault.read()).state ?? '';
         const got = u.searchParams.get('state') ?? '';
         const stateOk = expected.length > 0 && got.length === expected.length && timingSafeEqual(Buffer.from(got), Buffer.from(expected));
         const code = u.searchParams.get('code');

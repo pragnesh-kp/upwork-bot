@@ -1,5 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname } from 'node:path';
+import type { Store } from '../db.ts';
 import { SourceError } from '../sources/types.ts';
 import { extractSearchParamSchema, toolError, toolPayload, type ParamSchema } from './schema.ts';
 import type { McpCaller } from './session.ts';
@@ -147,11 +146,13 @@ export function resolveToolName(names: string[], base: string): string | null {
   return names.find((n) => n === base) ?? names.find((n) => n.endsWith(`__${base}`)) ?? null;
 }
 
-export function saveDiscovery(path: string, d: Discovery): void {
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, JSON.stringify(d, null, 2), { mode: 0o600 });
+const DISCOVERY_KV_KEY = 'upwork_discovery';
+
+export async function saveDiscovery(store: Store, d: Discovery): Promise<void> {
+  await store.kvSet(DISCOVERY_KV_KEY, JSON.stringify(d));
 }
 
-export function loadDiscovery(path: string): Discovery | null {
-  return existsSync(path) ? (JSON.parse(readFileSync(path, 'utf8')) as Discovery) : null;
+export async function loadDiscovery(store: Store): Promise<Discovery | null> {
+  const raw = await store.kvGet(DISCOVERY_KV_KEY);
+  return raw ? (JSON.parse(raw) as Discovery) : null;
 }

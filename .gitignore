@@ -3,3 +3,4 @@ data/
 .env
 filters.json
 filters.json.tmp
+.vercel/

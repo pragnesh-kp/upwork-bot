@@ -1,6 +1,5 @@
 // Job Alerts dashboard client. Every value from Upwork is inserted with
 // textContent (never innerHTML), so job content cannot inject markup.
-const TOKEN = document.querySelector('meta[name="dashboard-token"]').content;
 const $ = (id) => document.getElementById(id);
 const SAVED_FILTER = 'jobAlerts.filter';
 const view = { filter: '', state: '', q: '', day: '' };
@@ -18,13 +17,26 @@ function el(tag, props = {}, text) {
   return e;
 }
 
+class LoginRequired extends Error {}
+
 async function api(path, body) {
   const res = await fetch(path, body === undefined
-    ? { cache: 'no-store' }
-    : { method: 'POST', headers: { 'content-type': 'application/json', 'x-dashboard-token': TOKEN }, body: JSON.stringify(body) });
+    ? { cache: 'no-store', credentials: 'same-origin' }
+    // The custom header is required by the server for every change (other sites cannot send it).
+    : { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-requested-with': 'job-alerts' }, body: JSON.stringify(body) });
   const data = await res.json().catch(() => ({}));
+  if (res.status === 401 && data.loginRequired) {
+    showLogin();
+    throw new LoginRequired('Login required');
+  }
   if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
   return data;
+}
+
+function showLogin() {
+  $('app').hidden = true;
+  $('login').hidden = false;
+  $('password').focus();
 }
 
 function ago(iso) {
@@ -52,11 +64,20 @@ function clock(iso) {
 function renderSchedule(s) {
   const box = $('schedule');
   const parts = [];
-  if (s.running) parts.push('Searching Upwork now…');
-  else if (s.schedule?.nextRunAt) parts.push(`Automatic search every ~${s.schedule.intervalMinutes} min · next at ${clock(s.schedule.nextRunAt)}`);
-  else if (s.schedule) parts.push(`Automatic search every ~${s.schedule.intervalMinutes} min · searching now…`);
-  else parts.push('Automatic searching is off here (run "npm run watch" or install the background task)');
-  if (s.lastRun) parts.push(`last search ${ago(s.lastRun.finishedAt || s.lastRun.startedAt)} (${s.lastRun.status})`);
+  const r = s.running;
+  if (r && r.tasksTotal) parts.push(`Searching Upwork now… ${r.tasksDone}/${r.tasksTotal} searches done, ${r.newJobs} new job(s) so far${r.retryAfter ? ` (Upwork asked to wait until ${clock(r.retryAfter)})` : ''}`);
+  else if (r) parts.push('Search queued…');
+  else {
+    parts.push(`Automatic search every ~${s.schedule.intervalMinutes} min`);
+    if (s.schedule.nextDueAt) parts.push(Date.parse(s.schedule.nextDueAt) > Date.now() ? `next at ${clock(s.schedule.nextDueAt)}` : 'next on the scheduler\'s next call');
+  }
+  if (s.lastRun?.finishedAt) parts.push(`last search ${ago(s.lastRun.finishedAt)} (${s.lastRun.status})`);
+  // The external scheduler should call every few minutes; warn when it has gone quiet.
+  const call = s.schedule.lastSchedulerCall;
+  if (!call) parts.push('⚠ the scheduler has not called yet (see DEPLOY.md, step 6)');
+  else if (Date.now() - Date.parse(call) > 30 * 60000) parts.push(`⚠ the scheduler last called ${ago(call)}`);
+  const stopped = s.lastRun?.summary?.stoppedEarly;
+  if (stopped) parts.push(`⚠ ${stopped}`);
   box.textContent = `${parts.join(' · ')}. Each job is listed once, even if a later search finds it again.`;
 }
 
@@ -64,11 +85,6 @@ function renderState(s) {
   lastState = s;
   $('subtitle').textContent = `Upwork MCP${s.account ? ` · ${s.account}` : ''} · ${s.totals.seen} jobs found · kept ${s.retentionDays} days`;
   renderSchedule(s);
-  const tg = $('telegram');
-  const telegramOn = s.telegram.configured && !s.telegram.dryRun;
-  tg.hidden = !telegramOn;
-  tg.textContent = `Telegram on · ${s.telegram.recipients} chat(s)`;
-  tg.className = 'pill ok';
 
   // A remembered filter that was removed meanwhile falls back to "All filters".
   if (view.filter && !s.filters.some((f) => f.name === view.filter)) selectFilter('');
@@ -115,15 +131,33 @@ function renderState(s) {
   };
   list.replaceChildren(item(null), ...s.filters.map((f) => item(f)));
   if (s.filtersError) list.append(el('li', { class: 'muted' }, s.filtersError));
-  $('totals').textContent = telegramOn ? `Alerts sent ${s.totals.alertsSent} · pending ${s.totals.alertsPending} · failed ${s.totals.alertsFailed}` : '';
 
   const btn = $('run');
   btn.disabled = !!s.running;
   btn.textContent = s.running ? 'Searching…' : view.filter ? 'Search this filter now' : 'Search all now';
   btn.title = view.filter ? `Search Upwork for "${view.filter}" now` : 'Search Upwork for all filters now';
-  // While a search runs (e.g. the first search of a new filter), refresh often so its jobs show up.
-  clearTimeout(renderState.poll);
-  if (s.running) renderState.poll = setTimeout(() => refresh().catch(() => {}), 5000);
+  // While a search is running or queued (e.g. the first search of a new filter), this page pushes it
+  // forward itself instead of waiting for the scheduler, and refreshes so its jobs show up.
+  if (s.running) pushSearch();
+}
+
+let pushing = false;
+async function pushSearch() {
+  if (pushing) return;
+  pushing = true;
+  try {
+    for (let i = 0; i < 40; i++) {
+      const r = await api('/api/step', {});
+      if (r.status === 'finished') showRunResult(r.summary);
+      await refresh();
+      if (r.status === 'idle' || r.status === 'finished') break;
+      await new Promise((ok) => setTimeout(ok, r.status === 'continued' ? 500 : 5000));
+    }
+  } catch (err) {
+    if (!(err instanceof LoginRequired)) showRunResult(null, err.message);
+  } finally {
+    pushing = false;
+  }
 }
 
 function selectFilter(name) {
@@ -215,9 +249,6 @@ function renderJobs(jobs) {
       badges.append(el('span', { class: 'badge ok' }, 'Just found'));
       n.classList.add('fresh');
     }
-    if (j.alertStatus === 'sent') badges.append(el('span', { class: 'badge ok' }, 'Sent to Telegram'));
-    else if (j.alertStatus === 'pending') badges.append(el('span', { class: 'badge' }, 'Alert pending'));
-    else if (j.alertStatus === 'failed') badges.append(el('span', { class: 'badge err' }, 'Alert failed'));
     if (j.reviewState !== 'new') badges.append(el('span', { class: 'badge muted' }, j.reviewState));
 
     const meta = n.querySelector('.meta');
@@ -287,12 +318,13 @@ function showRunResult(summary, error) {
   const head = el('div');
   head.append(el('strong', {}, `Search finished (${summary.status}). `),
     document.createTextNode(`${summary.newJobs} new job(s) found.`));
+  box.hidden = false;
   const ul = el('ul');
   for (const f of summary.filters) {
-    const li = el('li', {}, `${f.name}: ${f.error ? '' : `${f.returned} returned, ${f.accepted} matched${f.baselineRun ? ' (first search of this filter)' : ''}`}`);
+    const li = el('li', {}, `${f.name}: ${f.error ? '' : `${f.returned} returned, ${f.accepted} matched, ${f.newJobs} new${f.firstRun ? ' (first search of this filter)' : ''}`}`);
     if (f.error) li.append(el('span', { class: 'err' }, f.error));
     if (f.ignoredFilters.length) li.append(el('span', { class: 'warn' }, ` · Upwork did not apply: ${f.ignoredFilters.join(', ')}`));
-    if (f.moreResultsNotFetched) li.append(el('span', { class: 'muted' }, ' · more results exist (first page only)'));
+    if (f.moreResultsNotFetched) li.append(el('span', { class: 'muted' }, ' · older results not fetched (page limit)'));
     ul.append(li);
   }
   box.replaceChildren(head, ul);
@@ -304,12 +336,13 @@ $('run').addEventListener('click', async () => {
   btn.disabled = true;
   btn.textContent = 'Searching…';
   try {
-    const summary = await api('/api/search', { filter: view.filter || null });
-    showRunResult(summary);
+    const r = await api('/api/search', { filter: view.filter || null });
+    if (r.status === 'finished') showRunResult(r.summary);
+    else if (r.status === 'busy') showRunResult(null, 'Another search is running; yours is queued and starts right after it.');
   } catch (err) {
-    showRunResult(null, err.message);
+    if (!(err instanceof LoginRequired)) showRunResult(null, err.message);
   }
-  await refresh();
+  await refresh().catch(() => {});
 });
 
 for (const b of document.querySelectorAll('.segmented button')) {
@@ -353,5 +386,38 @@ $('add-filter').addEventListener('submit', async (e) => {
   }
 });
 
-refresh().catch((err) => showRunResult(null, err.message));
-setInterval(() => refresh().catch(() => {}), 30000);
+$('login-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const msg = $('login-msg');
+  msg.hidden = true;
+  try {
+    await api('/api/login', { password: $('password').value });
+    $('password').value = '';
+    start();
+  } catch (err) {
+    msg.hidden = false;
+    msg.textContent = err.message;
+  }
+});
+$('logout').addEventListener('click', async () => {
+  await api('/api/logout', {}).catch(() => {});
+  location.reload();
+});
+
+let started = false;
+async function start() {
+  try {
+    await refresh();
+  } catch (err) {
+    if (!(err instanceof LoginRequired)) showRunResult(null, err.message);
+    return;
+  }
+  $('login').hidden = true;
+  $('app').hidden = false;
+  $('logout').hidden = false;
+  if (!started) {
+    started = true;
+    setInterval(() => refresh().catch(() => {}), 30000);
+  }
+}
+start();

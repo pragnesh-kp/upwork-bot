@@ -3,11 +3,21 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="dashboard-token" content="__DASHBOARD_TOKEN__" />
     <title>Job Alerts</title>
     <link rel="stylesheet" href="/app.css" />
   </head>
   <body>
+    <section id="login" class="login" hidden>
+      <form id="login-form" class="login-box" autocomplete="on">
+        <h1>Job Alerts</h1>
+        <label for="password">Password</label>
+        <input id="password" type="password" autocomplete="current-password" required autofocus />
+        <button class="primary" type="submit">Log in</button>
+        <p id="login-msg" class="add-msg err" hidden></p>
+      </form>
+    </section>
+
+    <div id="app" hidden>
     <header class="topbar">
       <div class="brand">
         <span class="logo" aria-hidden="true">◎</span>
@@ -17,8 +27,8 @@
         </div>
       </div>
       <div class="actions">
-        <span id="telegram" class="pill"></span>
         <button id="run" class="primary" type="button">Search now</button>
+        <button id="logout" type="button" hidden>Log out</button>
       </div>
     </header>
 
@@ -41,7 +51,6 @@
             <p id="add-msg" class="add-msg" hidden></p>
           </form>
         </details>
-        <div id="totals" class="totals muted"></div>
       </nav>
 
       <main>
@@ -85,6 +94,7 @@
         </div>
       </article>
     </template>
+    </div>
 
     <script src="/app.js"></script>
   </body>

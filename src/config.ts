@@ -1,10 +1,16 @@
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 export interface Config {
-  dataDir: string;
-  filtersFile: string;
-  telegram: { token: string | null; chatIds: string[]; dryRun: boolean; apiBase: string };
+  /** libSQL database: Turso (libsql://…) on Vercel, a local SQLite file otherwise. */
+  db: { url: string; authToken: string | null };
+  /** True on Vercel (VERCEL=1): the dashboard requires a password and a secure cookie. */
+  onVercel: boolean;
+  /** Dashboard password (DASHBOARD_PASSWORD). Required on Vercel; optional locally. */
+  dashboardPassword: string | null;
+  /** Secret the scheduler sends as "Authorization: Bearer <CRON_SECRET>". */
+  cronSecret: string | null;
   upwork: {
     mcpUrl: string;
     callbackPort: number;
@@ -12,11 +18,17 @@ export interface Config {
     accountName: string | null;
     tokenKey: Buffer | null;
   };
-  search: { maxPagesPerFilter: number; firstRunMaxPages: number; pageSize: number; delayBetweenSearchesMs: number; alertOnFirstRun: boolean };
-  /** `npm run watch`: minutes between automatic searches, and the dashboard port. */
-  watch: { intervalMinutes: number; dashboardPort: number };
+  search: { maxPagesPerFilter: number; firstRunMaxPages: number; pageSize: number; delayBetweenSearchesMs: number };
+  /** Minutes between automatic searches; the scheduler calls /api/cron more often than this. */
+  intervalMinutes: number;
+  /**
+   * Search work per scheduler or dashboard call (seconds); the rest continues on the next call.
+   * Default 20: cron-job.org's free plan cuts a call off after 30 s.
+   */
+  stepBudgetSeconds: number;
+  /** Local `npm run dev` only. */
+  dev: { port: number; dataDir: string };
   retentionDays: number;
-  descriptionMaxChars: number;
   logLevel: 'debug' | 'info' | 'warn' | 'error';
 }
 
@@ -35,28 +47,10 @@ function int(env: NodeJS.ProcessEnv, key: string, def: number, min: number, max:
   return n;
 }
 
-function bool(env: NodeJS.ProcessEnv, key: string, def: boolean): boolean {
-  const raw = env[key]?.trim().toLowerCase();
-  if (!raw) return def;
-  if (['true', '1', 'yes'].includes(raw)) return true;
-  if (['false', '0', 'no'].includes(raw)) return false;
-  throw new ConfigError(`${key} must be true or false`);
-}
-
 const str = (env: NodeJS.ProcessEnv, key: string): string | null => env[key]?.trim() || null;
 
 /** Validates configuration. Error messages never include secret values. */
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
-  const token = str(env, 'TELEGRAM_BOT_TOKEN');
-  if (token && !/^\d{5,}:[A-Za-z0-9_-]{20,}$/.test(token)) throw new ConfigError('TELEGRAM_BOT_TOKEN does not look like a BotFather token');
-  const chatIds = (str(env, 'TELEGRAM_CHAT_ID') ?? '')
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean);
-  for (const id of chatIds) {
-    if (!/^(-?\d{1,20}|@[A-Za-z0-9_]{5,64})$/.test(id)) throw new ConfigError(`TELEGRAM_CHAT_ID entry "${id}" is not a numeric chat id or @channel`);
-  }
-
   let tokenKey: Buffer | null = null;
   const rawKey = str(env, 'TOKEN_ENCRYPTION_KEY');
   if (rawKey) {
@@ -70,15 +64,23 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const level = (str(env, 'LOG_LEVEL') ?? 'info') as Config['logLevel'];
   if (!['debug', 'info', 'warn', 'error'].includes(level)) throw new ConfigError('LOG_LEVEL must be debug, info, warn or error');
 
+  const onVercel = !!str(env, 'VERCEL');
+  const dataDir = resolve(str(env, 'DATA_DIR') ?? 'data');
+  // Turso's Vercel integration sets TURSO_DATABASE_URL / TURSO_AUTH_TOKEN.
+  const dbUrl = str(env, 'TURSO_DATABASE_URL') ?? str(env, 'DATABASE_URL') ?? (onVercel ? null : pathToFileURL(resolve(dataDir, 'local.db')).href);
+  if (!dbUrl) throw new ConfigError('TURSO_DATABASE_URL is not set. Connect a Turso database to this Vercel project (see DEPLOY.md).');
+  if (!/^(libsql|https?|wss?|file):/.test(dbUrl)) throw new ConfigError('TURSO_DATABASE_URL must start with libsql://, https:// or file:');
+
+  const password = str(env, 'DASHBOARD_PASSWORD');
+  if (password && password.length < 10) throw new ConfigError('DASHBOARD_PASSWORD must be at least 10 characters');
+  const cronSecret = str(env, 'CRON_SECRET');
+  if (cronSecret && cronSecret.length < 16) throw new ConfigError('CRON_SECRET must be at least 16 characters');
+
   return {
-    dataDir: resolve(str(env, 'DATA_DIR') ?? 'data'),
-    filtersFile: resolve(str(env, 'FILTERS_FILE') ?? 'filters.json'),
-    telegram: {
-      token,
-      chatIds,
-      dryRun: bool(env, 'TELEGRAM_DRY_RUN', !token),
-      apiBase: str(env, 'TELEGRAM_API_BASE') ?? 'https://api.telegram.org',
-    },
+    db: { url: dbUrl, authToken: str(env, 'TURSO_AUTH_TOKEN') ?? str(env, 'DATABASE_AUTH_TOKEN') },
+    onVercel,
+    dashboardPassword: password,
+    cronSecret,
     upwork: {
       mcpUrl: str(env, 'UPWORK_MCP_URL') ?? 'https://mcp.upwork.com/mcp',
       callbackPort: int(env, 'OAUTH_CALLBACK_PORT', 53682, 1024, 65535),
@@ -93,16 +95,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       firstRunMaxPages: int(env, 'FIRST_RUN_MAX_PAGES', 10, 1, 30),
       // The live find_jobs returns at most 10 jobs per page.
       pageSize: int(env, 'PAGE_SIZE', 10, 1, 10),
-      delayBetweenSearchesMs: int(env, 'DELAY_BETWEEN_SEARCHES_MS', 5000, 0, 120_000),
-      alertOnFirstRun: bool(env, 'ALERT_ON_FIRST_RUN', false),
+      delayBetweenSearchesMs: int(env, 'DELAY_BETWEEN_SEARCHES_MS', 3000, 0, 60_000),
     },
-    watch: {
-      intervalMinutes: int(env, 'SEARCH_INTERVAL_MINUTES', 30, 10, 1440),
-      dashboardPort: int(env, 'DASHBOARD_PORT', 5174, 1024, 65535),
-    },
+    intervalMinutes: int(env, 'SEARCH_INTERVAL_MINUTES', 30, 10, 1440),
+    stepBudgetSeconds: int(env, 'STEP_BUDGET_SECONDS', 20, 5, 280),
+    dev: { port: int(env, 'DASHBOARD_PORT', 5174, 1024, 65535), dataDir },
     // Upwork's API & MCP Terms (s. 8.6): MCP outputs may be kept no longer than 30 days.
     retentionDays: int(env, 'RETENTION_DAYS', 30, 1, 30),
-    descriptionMaxChars: int(env, 'DESCRIPTION_MAX_CHARS', 500, 0, 2000),
     logLevel: level,
   };
 }

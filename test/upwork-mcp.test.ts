@@ -1,16 +1,24 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
 import { request } from 'node:http';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { test } from 'node:test';
 import { parseUpworkSearchUrl, type FilterDef } from '../src/filters.ts';
 import { discover, type Discovery } from '../src/mcp/discover.ts';
-import { LocalOAuthProvider, TokenVault } from '../src/mcp/oauth.ts';
+import { LocalOAuthProvider, TokenVault, type VaultStorage } from '../src/mcp/oauth.ts';
 import type { McpCaller } from '../src/mcp/session.ts';
 import { SourceError } from '../src/sources/types.ts';
 import { UpworkMcpSource } from '../src/sources/upwork-mcp.ts';
-import { escapeHtml, formatAlert } from '../src/telegram.ts';
+import { budgetText, safeUpworkUrl } from '../src/format.ts';
+
+/** In-memory stand-in for the database row that holds the encrypted vault. */
+function memoryStorage(): VaultStorage & { text: string | null } {
+  const s = {
+    text: null as string | null,
+    load: async () => s.text,
+    save: async (t: string) => void (s.text = t),
+    remove: async () => void (s.text = null),
+  };
+  return s;
+}
 
 const p = parseUpworkSearchUrl('https://www.upwork.com/nx/search/jobs?q=Full%20stack%20developer&sort=recency&t=0,1');
 if (!p.ok) throw new Error('bad');
@@ -142,12 +150,14 @@ test('maps Upwork tool errors to retry / stop decisions', async () => {
   }
 });
 
-test('token vault encrypts at rest and rejects a wrong key', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'vault-'));
-  const v = new TokenVault(join(dir, 't.enc'), Buffer.alloc(32, 1));
-  v.write({ tokens: { access_token: 'secret-access', token_type: 'Bearer' } });
-  assert.equal(v.read().tokens?.access_token, 'secret-access');
-  assert.throws(() => new TokenVault(join(dir, 't.enc'), Buffer.alloc(32, 2)).read(), /decrypt/);
+test('token vault encrypts before storing and rejects a wrong key', async () => {
+  const storage = memoryStorage();
+  const v = new TokenVault(storage, Buffer.alloc(32, 1));
+  await v.write({ tokens: { access_token: 'secret-access', token_type: 'Bearer' } });
+  assert.equal((await v.read()).tokens?.access_token, 'secret-access');
+  assert.doesNotMatch(storage.text!, /secret-access/);
+  assert.equal(storage.text!.split('.').length, 3, 'same iv.tag.data format as the old upwork-oauth.enc file');
+  await assert.rejects(new TokenVault(storage, Buffer.alloc(32, 2)).read(), /decrypt/);
 });
 
 function hit(port: number, path: string): Promise<number> {
@@ -162,10 +172,9 @@ function hit(port: number, path: string): Promise<number> {
 }
 
 test('OAuth callback accepts only the matching state', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'oauth-'));
   const port = 40000 + Math.floor(Math.random() * 20000);
-  const provider = new LocalOAuthProvider({ vault: new TokenVault(join(dir, 't.enc'), Buffer.alloc(32, 3)), port, interactive: true });
-  const state = provider.state();
+  const provider = new LocalOAuthProvider({ vault: new TokenVault(memoryStorage(), Buffer.alloc(32, 3)), port, interactive: true });
+  const state = await provider.state();
 
   const bad = assert.rejects(provider.waitForCallback(5000), /state/);
   await new Promise((r) => setTimeout(r, 50));
@@ -179,21 +188,17 @@ test('OAuth callback accepts only the matching state', async () => {
 });
 
 test('non-interactive runs never open a browser sign-in', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'oauth-'));
-  const provider = new LocalOAuthProvider({ vault: new TokenVault(join(dir, 't.enc'), Buffer.alloc(32, 4)), port: 1, interactive: false });
+  const provider = new LocalOAuthProvider({ vault: new TokenVault(memoryStorage(), Buffer.alloc(32, 4)), port: 1, interactive: false });
   assert.throws(() => provider.redirectToAuthorization(new URL('https://www.upwork.com/ab/account-security/oauth2/authorize')), /npm run connect/);
 });
 
-test('alerts escape job content', () => {
-  const t = formatAlert(
-    { id: '1', title: '<b>Hack</b> & co', url: 'javascript:alert(1)', description: '<script>x</script>', postedAt: null, contractType: null, fixedBudget: null, hourlyMin: null, hourlyMax: null, currency: null, budgetLabel: null, skills: [] },
-    ['A & B'],
-    { descriptionMaxChars: 100 },
-  );
-  assert.ok(t.includes(escapeHtml('<b>Hack</b> & co')));
-  assert.ok(!t.includes('<script>'));
-  assert.ok(!t.includes('javascript:'));
-  assert.match(t, /NEW UPWORK OPPORTUNITY/);
-  assert.match(t, /Budget:<\/b> Not provided/);
-  assert.match(t, /Posted:<\/b> Not provided/);
+test('only https upwork.com links are kept; budgets are labelled, missing data says so', () => {
+  assert.equal(safeUpworkUrl('javascript:alert(1)'), null);
+  assert.equal(safeUpworkUrl('https://evil.example/jobs/1'), null);
+  assert.equal(safeUpworkUrl('http://www.upwork.com/jobs/~01'), null);
+  assert.equal(safeUpworkUrl('https://www.upwork.com/jobs/~01'), 'https://www.upwork.com/jobs/~01');
+  const base = { id: '1', title: 't', url: null, description: null, postedAt: null, fixedBudget: null, hourlyMin: null, hourlyMax: null, currency: 'USD', budgetLabel: null, skills: [] };
+  assert.equal(budgetText({ ...base, contractType: 'FIXED', fixedBudget: 2500 }), 'Fixed price · $2,500');
+  assert.equal(budgetText({ ...base, contractType: 'HOURLY', hourlyMin: 15, hourlyMax: 45 }), 'Hourly · $15–$45/hr');
+  assert.equal(budgetText({ ...base, contractType: null }), 'Not provided');
 });
