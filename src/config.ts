@@ -50,15 +50,19 @@ function int(env: NodeJS.ProcessEnv, key: string, def: number, min: number, max:
 const str = (env: NodeJS.ProcessEnv, key: string): string | null => env[key]?.trim() || null;
 
 /**
- * Finds the Turso settings. Vercel's Marketplace integration may add a custom prefix
- * (e.g. STORAGE_TURSO_DATABASE_URL), so any non-empty *_TURSO_DATABASE_URL works,
- * paired with the auth token that has the same prefix.
+ * Finds the Turso settings. Vercel's Marketplace integration lets you pick a custom
+ * prefix for the variable names, so besides TURSO_DATABASE_URL any setting whose value
+ * is a libsql:// address works, paired with the *AUTH_TOKEN that has the same prefix.
  */
 function tursoSettings(env: NodeJS.ProcessEnv): { url: string | null; token: string | null } {
-  const urlKey = str(env, 'TURSO_DATABASE_URL') ? 'TURSO_DATABASE_URL' : Object.keys(env).sort().find((k) => k.endsWith('_TURSO_DATABASE_URL') && str(env, k));
+  const keys = Object.keys(env).sort();
+  const urlKey = str(env, 'TURSO_DATABASE_URL')
+    ? 'TURSO_DATABASE_URL'
+    : (keys.find((k) => k.endsWith('_TURSO_DATABASE_URL') && str(env, k)) ?? keys.find((k) => /^libsql:\/\//i.test(str(env, k) ?? '')));
   if (urlKey) {
-    const prefix = urlKey.slice(0, -'TURSO_DATABASE_URL'.length);
-    return { url: str(env, urlKey), token: str(env, `${prefix}TURSO_AUTH_TOKEN`) ?? str(env, 'TURSO_AUTH_TOKEN') };
+    const prefix = urlKey.replace(/(TURSO_)?(DATABASE_)?(URL|URI)$/i, '');
+    const token = ['AUTH_TOKEN', 'TURSO_AUTH_TOKEN', 'DATABASE_AUTH_TOKEN', 'TOKEN'].map((s) => str(env, `${prefix}${s}`)).find(Boolean) ?? str(env, 'TURSO_AUTH_TOKEN');
+    return { url: str(env, urlKey), token: token ?? null };
   }
   return { url: str(env, 'DATABASE_URL'), token: str(env, 'DATABASE_AUTH_TOKEN') };
 }
