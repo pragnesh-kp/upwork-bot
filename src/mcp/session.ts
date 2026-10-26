@@ -51,7 +51,7 @@ export async function connectUpwork(cfg: Config, store: Store, opts: { interacti
     if (!(err instanceof UnauthorizedError)) {
       throw new SourceError('temporary', `Could not connect to the Upwork MCP server: ${(err as Error).message}`);
     }
-    if (!callback) throw new SourceError('auth', 'Upwork authorization is missing or expired. Run "npm run connect".');
+    if (!callback) throw new SourceError('auth', 'Upwork sign-in is missing or expired. Press "Connect Upwork" on the dashboard.');
     const code = await callback;
     await transport.finishAuth(code);
     client = newClient();
@@ -60,7 +60,7 @@ export async function connectUpwork(cfg: Config, store: Store, opts: { interacti
   }
 
   const wrap = (e: unknown): never => {
-    if (e instanceof UnauthorizedError) throw new SourceError('auth', 'Upwork authorization expired or was revoked. Run "npm run connect".');
+    if (e instanceof UnauthorizedError) throw new SourceError('auth', 'Upwork sign-in expired or was revoked. Press "Connect Upwork" on the dashboard.');
     throw new SourceError('temporary', `Upwork MCP request failed: ${(e as Error).message}`);
   };
   return {

@@ -7,6 +7,8 @@ import { log } from '../log.ts';
 
 interface Vault {
   client?: OAuthClientInformationMixed;
+  /** The redirect URL the client above was registered with (CLI: 127.0.0.1; dashboard: the site). */
+  clientRedirectUrl?: string;
   tokens?: OAuthTokens;
   codeVerifier?: string;
   state?: string;
@@ -44,7 +46,7 @@ export class TokenVault {
       d.setAuthTag(Buffer.from(tag, 'base64url'));
       return JSON.parse(Buffer.concat([d.update(Buffer.from(data, 'base64url')), d.final()]).toString('utf8')) as Vault;
     } catch {
-      throw new Error('Cannot decrypt the stored Upwork sign-in (TOKEN_ENCRYPTION_KEY changed?). Run "npm run disconnect" then "npm run connect".');
+      throw new Error('Cannot decrypt the stored Upwork sign-in (TOKEN_ENCRYPTION_KEY changed?). Press "Connect Upwork" on the dashboard to sign in again.');
     }
   }
 
@@ -81,21 +83,32 @@ function openBrowser(url: string): void {
   }
 }
 
+/**
+ * OAuth client for the Upwork MCP server. Two sign-in flows use it:
+ * - CLI (`npm run connect`): Upwork redirects to a one-shot server on 127.0.0.1.
+ * - Dashboard ("Connect Upwork"): Upwork redirects to the site's /api/upwork/callback
+ *   (`redirectUrl` + `onRedirect`), possibly in another serverless invocation.
+ * Searches use it non-interactively: tokens are refreshed, never re-authorized.
+ */
 export class LocalOAuthProvider implements OAuthClientProvider {
   readonly clientMetadataUrl?: string;
   private readonly vault: TokenVault;
   private readonly port: number;
   private readonly interactive: boolean;
+  private readonly webRedirectUrl: string | null;
+  private readonly onRedirect: ((url: URL) => void) | null;
 
-  constructor(opts: { vault: TokenVault; port: number; interactive: boolean; clientMetadataUrl?: string | null }) {
+  constructor(opts: { vault: TokenVault; port: number; interactive: boolean; clientMetadataUrl?: string | null; redirectUrl?: string; onRedirect?: (url: URL) => void }) {
     this.vault = opts.vault;
     this.port = opts.port;
     this.interactive = opts.interactive;
+    this.webRedirectUrl = opts.redirectUrl ?? null;
+    this.onRedirect = opts.onRedirect ?? null;
     if (opts.clientMetadataUrl) this.clientMetadataUrl = opts.clientMetadataUrl;
   }
 
   get redirectUrl(): string {
-    return `http://127.0.0.1:${this.port}/callback`;
+    return this.webRedirectUrl ?? `http://127.0.0.1:${this.port}/callback`;
   }
 
   get clientMetadata(): OAuthClientMetadata {
@@ -115,10 +128,14 @@ export class LocalOAuthProvider implements OAuthClientProvider {
   }
 
   async clientInformation() {
-    return (await this.vault.read()).client;
+    const v = await this.vault.read();
+    // A new sign-in needs a client registered for this redirect URL; refreshing tokens needs
+    // the client that issued them, whatever its redirect.
+    if (this.interactive && v.clientRedirectUrl !== this.redirectUrl) return undefined;
+    return v.client;
   }
   async saveClientInformation(client: OAuthClientInformationMixed) {
-    await this.vault.update({ client });
+    await this.vault.update({ client, clientRedirectUrl: this.redirectUrl });
   }
   async tokens() {
     return (await this.vault.read()).tokens;
@@ -144,8 +161,9 @@ export class LocalOAuthProvider implements OAuthClientProvider {
   }
 
   redirectToAuthorization(url: URL): void {
+    if (this.onRedirect) return this.onRedirect(url);
     if (!this.interactive) {
-      throw new Error('Upwork authorization is required. Run "npm run connect" to sign in.');
+      throw new Error('Upwork authorization is required. Press "Connect Upwork" on the dashboard (or run "npm run connect").');
     }
     process.stdout.write(`\nOpen this URL to sign in to Upwork and authorize the connection:\n\n  ${url.toString()}\n\n`);
     openBrowser(url.toString());

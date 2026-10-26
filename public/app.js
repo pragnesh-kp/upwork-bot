@@ -85,6 +85,11 @@ function renderState(s) {
   lastState = s;
   $('subtitle').textContent = `Upwork MCP${s.account ? ` · ${s.account}` : ''} · ${s.totals.seen} jobs found · kept ${s.retentionDays} days`;
   renderSchedule(s);
+  // Sign in to Upwork from here: shown until connected, and again when a search hit a sign-in problem.
+  const connect = $('connect-upwork');
+  const signInProblem = !!s.upworkProblem && /sign-in|authori[sz]|connect/i.test(s.upworkProblem);
+  connect.hidden = !!s.account && !signInProblem;
+  connect.textContent = s.account ? 'Reconnect Upwork' : 'Connect Upwork';
 
   // A remembered filter that was removed meanwhile falls back to "All filters".
   if (view.filter && !s.filters.some((f) => f.name === view.filter)) selectFilter('');
@@ -386,6 +391,42 @@ $('add-filter').addEventListener('submit', async (e) => {
   }
 });
 
+$('connect-upwork').addEventListener('click', async () => {
+  const btn = $('connect-upwork');
+  btn.disabled = true;
+  btn.textContent = 'Opening Upwork…';
+  try {
+    const r = await api('/api/upwork/connect', {});
+    if (r.url) {
+      // Upwork's own sign-in page; Upwork sends you back here afterwards.
+      location.href = r.url;
+      return;
+    }
+    showNotice(`Upwork is already connected as ${r.connected}. Searching now…`);
+    await refresh();
+  } catch (err) {
+    if (!(err instanceof LoginRequired)) showRunResult(null, err.message);
+  }
+  btn.disabled = false;
+});
+
+function showNotice(text, isError = false) {
+  const box = $('run-result');
+  box.hidden = false;
+  box.className = `run-result${isError ? ' error' : ''}`;
+  box.replaceChildren(el('strong', {}, text));
+}
+
+/** Result of "Connect Upwork" after Upwork redirects back (?upwork=connected|error). */
+function handleSignInReturn() {
+  const q = new URLSearchParams(location.search);
+  const result = q.get('upwork');
+  if (!result) return;
+  history.replaceState(null, '', location.pathname);
+  if (result === 'connected') showNotice('Upwork connected. The first search is running now; jobs appear as it finishes.');
+  else showNotice(`Upwork sign-in failed: ${q.get('message') || 'unknown error'}`, true);
+}
+
 $('login-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const msg = $('login-msg');
@@ -415,6 +456,7 @@ async function start() {
   $('login').hidden = true;
   $('app').hidden = false;
   $('logout').hidden = false;
+  handleSignInReturn();
   if (!started) {
     started = true;
     setInterval(() => refresh().catch(() => {}), 30000);

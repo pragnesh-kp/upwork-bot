@@ -92,7 +92,7 @@ export async function enabledFilters(store: Store): Promise<FilterDef[]> {
 
 async function openUpwork(d: EngineDeps): Promise<JobSource> {
   const discovery = await loadDiscovery(d.store);
-  if (!discovery) throw new SourceError('auth', 'Upwork is not connected yet. Run "npm run connect" and "npm run discover" (see DEPLOY.md).');
+  if (!discovery) throw new SourceError('auth', 'Upwork is not connected yet. Press "Connect Upwork" on the dashboard.');
   return new UpworkMcpSource(await connectUpwork(d.cfg, d.store, { interactive: false }), discovery);
 }
 
