@@ -27,7 +27,7 @@ Keep them somewhere safe (a password manager). Never put them on GitHub.
 ## 2. Create the Vercel project
 
 1. Sign in at [vercel.com](https://vercel.com) (you can use your GitHub account).
-2. **Add New → Project → Import Git Repository**, then pick **pragnesh-kp/upwork-bot**. If it isn't listed, use "Adjust GitHub App Permissions" to give Vercel access to that private repo.
+2. **Add New → Project → Import Git Repository**, then pick **pragnesh-kp/upwork-bot**. If it isn't listed, use "Adjust GitHub App Permissions" to give Vercel access to it.
 3. Framework Preset: **Other**. Leave the build settings alone; `vercel.json` sets them (`npm ci`, `npm run build`).
 4. Click **Deploy**. The first deployment works, but the site reports missing settings until steps 3–4 are done.
 
