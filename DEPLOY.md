@@ -91,16 +91,16 @@ ssh -N -L 5174:127.0.0.1:5174 root@YOUR_SERVER_IP
 
 Leave that window open and browse to **http://127.0.0.1:5174** on your PC. Closing the window only closes your view; the bot keeps running on the server.
 
-## 6. Optional: open it at https://upwork.pelicanstechnology.com (password protected)
+## 6. Optional: open it at https://upwork.pelicanstechnologies.com (password protected)
 
 This makes the dashboard reachable from any browser or phone, over HTTPS and behind a username and password. **Caddy** (a free web server) gets the HTTPS certificate automatically and asks for the password. The bot itself keeps listening only on the server.
 
-> In every command and in the config below, replace `upwork.pelicanstechnology.com` with your exact subdomain if your domain does not end in `.com`.
+> In every command and in the config below, replace `upwork.pelicanstechnologies.com` with your exact subdomain if you use a different one.
 
 **a) DNS (hPanel → Domains → your domain → DNS / Nameservers).** Add a record: Type **A**, Name **upwork**, Value **your VPS IPv4** (hPanel → VPS → Overview), TTL 300 or 14400. Check it on the PC; the answer must be your VPS IP:
 
 ```powershell
-nslookup upwork.pelicanstechnology.com
+nslookup upwork.pelicanstechnologies.com
 ```
 
 **b) Install Caddy (server):**
@@ -124,7 +124,7 @@ Type the password twice. It prints a hash starting with `$2a$`. Copy it.
 
 ```bash
 cat > /etc/caddy/Caddyfile <<'EOF'
-upwork.pelicanstechnology.com {
+upwork.pelicanstechnologies.com {
 	basic_auth {
 		admin PASTE_HASH_HERE
 	}
@@ -153,7 +153,7 @@ ufw status
 
 If hPanel → VPS → **Firewall** has rules turned on, allow TCP 80 and 443 there too.
 
-**f) Open it.** Browse to **https://upwork.pelicanstechnology.com**. The browser asks for the username and password, then shows the dashboard. The first visit can take up to a minute while Caddy fetches the certificate.
+**f) Open it.** Browse to **https://upwork.pelicanstechnologies.com**. The browser asks for the username and password, then shows the dashboard. The first visit can take up to a minute while Caddy fetches the certificate.
 
 If it doesn't load, `journalctl -u caddy -n 50 --no-pager` shows why. The usual causes are DNS not pointing to the VPS yet, or ports 80/443 blocked.
 
