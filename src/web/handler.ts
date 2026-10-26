@@ -244,7 +244,8 @@ export function createHandler(deps: HandlerDeps): Handler {
 
       if (req.method === 'POST') {
         const body = await readJson(req);
-        if (path === '/api/jobs/state') {
+        // POST /api/jobs sets a review state (one function per path; Vercel Hobby allows 12).
+        if (path === '/api/jobs') {
           const s = String(body.state ?? '');
           if (!STATES.has(s) || typeof body.source !== 'string' || typeof body.jobId !== 'string') return send(res, 400, { error: 'Invalid request' });
           const ok = await store.setReviewState(body.source, body.jobId, s as 'new' | 'saved' | 'reviewed' | 'dismissed');
@@ -271,7 +272,8 @@ export function createHandler(deps: HandlerDeps): Handler {
           if (!(await hasPendingWork(store))) return send(res, 200, { status: 'idle' });
           return send(res, 200, await step(engine, interactiveMs));
         }
-        if (path === '/api/filters/add') {
+        // POST /api/filters with action "add" or "remove".
+        if (path === '/api/filters' && body.action === 'add') {
           const rawUrl = typeof body.url === 'string' ? body.url.trim() : '';
           const parsed = parseUpworkSearchUrl(rawUrl);
           if (!parsed.ok) return send(res, 400, { error: `That link is not an Upwork job search: ${parsed.error}.` });
@@ -293,7 +295,7 @@ export function createHandler(deps: HandlerDeps): Handler {
           await requestSearch(store, name);
           return send(res, 200, { ok: true, name });
         }
-        if (path === '/api/filters/remove') {
+        if (path === '/api/filters' && body.action === 'remove') {
           const name = typeof body.name === 'string' ? body.name : '';
           if (!(await store.removeFilter(name))) return send(res, 404, { error: 'Filter not found' });
           log.info('filter removed from dashboard', { filter: name });

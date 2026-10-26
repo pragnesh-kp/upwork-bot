@@ -92,8 +92,8 @@ test('changes need the custom header and a same-origin request', async () => {
   try {
     assert.equal((await t.call('POST', '/api/login', { body: { password: PASSWORD }, noCsrf: true })).status, 403);
     await t.login();
-    assert.equal((await t.call('POST', '/api/filters/remove', { body: { name: 'x' }, noCsrf: true })).status, 403);
-    assert.equal((await t.call('POST', '/api/filters/remove', { body: { name: 'x' }, headers: { origin: 'https://evil.example' } })).status, 403);
+    assert.equal((await t.call('POST', '/api/filters', { body: { action: 'remove', name: 'x' }, noCsrf: true })).status, 403);
+    assert.equal((await t.call('POST', '/api/filters', { body: { action: 'remove', name: 'x' }, headers: { origin: 'https://evil.example' } })).status, 403);
   } finally {
     await t.close();
   }
@@ -143,7 +143,7 @@ test('adds a filter from an Upwork link and searches it; refuses bad, duplicate 
   try {
     await t.login();
     const link = 'https://www.upwork.com/nx/search/jobs?q=react%20native&amount=1000-50000&t=1';
-    const ok = await t.call('POST', '/api/filters/add', { body: { url: link } });
+    const ok = await t.call('POST', '/api/filters', { body: { action: 'add', url: link } });
     assert.equal(ok.status, 200);
     assert.equal(ok.body.name, 'React Native');
     const state = (await t.call('GET', '/api/state')).body as { running: unknown; filters: { name: string }[] };
@@ -153,16 +153,16 @@ test('adds a filter from an Upwork link and searches it; refuses bad, duplicate 
     const { jobs } = (await t.call('GET', '/api/jobs')).body as { jobs: { jobId: string; filters: string[] }[] };
     assert.deepEqual(jobs.map((j) => [j.jobId, j.filters]), [['job-React Native', ['React Native']]]);
 
-    assert.match(String((await t.call('POST', '/api/filters/add', { body: { url: link } })).body.error), /already one of your filters/);
-    const unsupported = await t.call('POST', '/api/filters/add', { body: { url: 'https://www.upwork.com/nx/search/jobs?q=x&contractor_tier=3' } });
+    assert.match(String((await t.call('POST', '/api/filters', { body: { action: 'add', url: link } })).body.error), /already one of your filters/);
+    const unsupported = await t.call('POST', '/api/filters', { body: { action: 'add', url: 'https://www.upwork.com/nx/search/jobs?q=x&contractor_tier=3' } });
     assert.equal(unsupported.status, 400);
     assert.match(String(unsupported.body.error), /contractor_tier/);
-    assert.equal((await t.call('POST', '/api/filters/add', { body: { url: 'https://example.com/jobs?q=x' } })).status, 400);
+    assert.equal((await t.call('POST', '/api/filters', { body: { action: 'add', url: 'https://example.com/jobs?q=x' } })).status, 400);
 
-    assert.equal((await t.call('POST', '/api/filters/remove', { body: { name: 'React Native' } })).status, 200);
+    assert.equal((await t.call('POST', '/api/filters', { body: { action: 'remove', name: 'React Native' } })).status, 200);
     assert.deepEqual((await t.call('GET', '/api/jobs')).body.jobs, []);
     assert.equal(await t.store.isSeen(SOURCE, 'job-React Native'), false, 'forgotten, so re-adding the filter finds it again');
-    assert.equal((await t.call('POST', '/api/filters/remove', { body: { name: 'Nope' } })).status, 404);
+    assert.equal((await t.call('POST', '/api/filters', { body: { action: 'remove', name: 'Nope' } })).status, 404);
   } finally {
     await t.close();
   }
@@ -177,8 +177,8 @@ test('"Search now" searches the chosen filter; review states filter the list', a
     const r = await t.call('POST', '/api/search', { body: { filter: 'React' } });
     assert.equal(r.body.status, 'finished');
     assert.equal(t.src.calls, 1);
-    assert.equal((await t.call('POST', '/api/jobs/state', { body: { source: SOURCE, jobId: 'job-React', state: 'saved' } })).status, 200);
-    assert.equal((await t.call('POST', '/api/jobs/state', { body: { source: SOURCE, jobId: 'job-React', state: 'hacked' } })).status, 400);
+    assert.equal((await t.call('POST', '/api/jobs', { body: { source: SOURCE, jobId: 'job-React', state: 'saved' } })).status, 200);
+    assert.equal((await t.call('POST', '/api/jobs', { body: { source: SOURCE, jobId: 'job-React', state: 'hacked' } })).status, 400);
     const saved = (await t.call('GET', '/api/jobs?state=saved')).body.jobs as { jobId: string }[];
     assert.deepEqual(saved.map((j) => j.jobId), ['job-React']);
   } finally {

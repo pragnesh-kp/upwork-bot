@@ -121,7 +121,7 @@ function renderState(s) {
         if (!confirm(`Remove the filter "${f.name}"?\n\nIts jobs disappear from the dashboard and it is no longer searched.`)) return;
         rm.disabled = true;
         try {
-          await api('/api/filters/remove', { name: f.name });
+          await api('/api/filters', { action: 'remove', name: f.name });
           if (view.filter === f.name) selectFilter('');
           await refresh();
         } catch (err) {
@@ -282,7 +282,7 @@ function renderJobs(jobs) {
       b.addEventListener('click', async () => {
         b.disabled = true;
         try {
-          await api('/api/jobs/state', { source: j.source, jobId: j.jobId, state: act });
+          await api('/api/jobs', { source: j.source, jobId: j.jobId, state: act });
           await refresh();
         } catch (err) {
           alert(err.message);
@@ -377,7 +377,7 @@ $('add-filter').addEventListener('submit', async (e) => {
   msg.className = 'add-msg';
   msg.textContent = 'Adding…';
   try {
-    const { name } = await api('/api/filters/add', { url: $('add-url').value.trim(), name: $('add-name').value.trim() });
+    const { name } = await api('/api/filters', { action: 'add', url: $('add-url').value.trim(), name: $('add-name').value.trim() });
     $('add-url').value = '';
     $('add-name').value = '';
     msg.textContent = `Added "${name}". Its first search is running now (up to a few minutes); jobs appear as soon as it finishes.`;
