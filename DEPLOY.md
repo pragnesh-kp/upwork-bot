@@ -83,13 +83,81 @@ You should see `watch: search finished … "status":"ok"` within a few minutes.
 
 ## 5. Open the dashboard (PC)
 
-The dashboard only listens on the server itself and has no password, so it is **not** published on the internet. Open it through an SSH tunnel:
+The dashboard only listens on the server itself and has no password of its own, so it is **not** published on the internet by itself. Either open it through an SSH tunnel (below), or give it a password-protected web address (section 6).
 
 ```powershell
 ssh -N -L 5174:127.0.0.1:5174 root@YOUR_SERVER_IP
 ```
 
 Leave that window open and browse to **http://127.0.0.1:5174** on your PC. Closing the window only closes your view; the bot keeps running on the server.
+
+## 6. Optional: open it at https://upwork.pelicanstechnology.com (password protected)
+
+This makes the dashboard reachable from any browser or phone, over HTTPS and behind a username and password. **Caddy** (a free web server) gets the HTTPS certificate automatically and asks for the password. The bot itself keeps listening only on the server.
+
+> In every command and in the config below, replace `upwork.pelicanstechnology.com` with your exact subdomain if your domain does not end in `.com`.
+
+**a) DNS (hPanel → Domains → your domain → DNS / Nameservers).** Add a record: Type **A**, Name **upwork**, Value **your VPS IPv4** (hPanel → VPS → Overview), TTL 300 or 14400. Check it on the PC; the answer must be your VPS IP:
+
+```powershell
+nslookup upwork.pelicanstechnology.com
+```
+
+**b) Install Caddy (server):**
+
+```bash
+apt -y install debian-keyring debian-archive-keyring apt-transport-https curl gnupg
+curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' > /etc/apt/sources.list.d/caddy-stable.list
+apt update && apt -y install caddy
+```
+
+**c) Create the password (server).** Pick a long password (12+ characters); this page can add and remove your filters.
+
+```bash
+caddy hash-password
+```
+
+Type the password twice. It prints a hash starting with `$2a$`. Copy it.
+
+**d) Write the config (server).** Paste your hash in place of `PASTE_HASH_HERE`, and pick a username (here `admin`):
+
+```bash
+cat > /etc/caddy/Caddyfile <<'EOF'
+upwork.pelicanstechnology.com {
+	basic_auth {
+		admin PASTE_HASH_HERE
+	}
+	reverse_proxy 127.0.0.1:5174 {
+		# The dashboard only accepts requests addressed to 127.0.0.1 (DNS-rebinding protection).
+		header_up Host 127.0.0.1:5174
+	}
+	encode gzip
+	header Strict-Transport-Security "max-age=31536000"
+}
+EOF
+nano /etc/caddy/Caddyfile        # paste the hash, save with Ctrl+O, Enter, Ctrl+X
+caddy validate --config /etc/caddy/Caddyfile
+systemctl reload caddy
+```
+
+**e) Firewall (server).** Open only SSH and the web ports. Never open 5174.
+
+```bash
+ufw allow OpenSSH
+ufw allow 80/tcp
+ufw allow 443/tcp
+ufw --force enable
+ufw status
+```
+
+If hPanel → VPS → **Firewall** has rules turned on, allow TCP 80 and 443 there too.
+
+**f) Open it.** Browse to **https://upwork.pelicanstechnology.com**. The browser asks for the username and password, then shows the dashboard. The first visit can take up to a minute while Caddy fetches the certificate.
+
+If it doesn't load, `journalctl -u caddy -n 50 --no-pager` shows why. The usual causes are DNS not pointing to the VPS yet, or ports 80/443 blocked.
+
+**Change the password later:** run `caddy hash-password` again, replace the hash in `/etc/caddy/Caddyfile`, then `systemctl reload caddy`.
 
 ## Everyday commands (server)
 
