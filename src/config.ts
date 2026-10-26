@@ -49,6 +49,20 @@ function int(env: NodeJS.ProcessEnv, key: string, def: number, min: number, max:
 
 const str = (env: NodeJS.ProcessEnv, key: string): string | null => env[key]?.trim() || null;
 
+/**
+ * Finds the Turso settings. Vercel's Marketplace integration may add a custom prefix
+ * (e.g. STORAGE_TURSO_DATABASE_URL), so any non-empty *_TURSO_DATABASE_URL works,
+ * paired with the auth token that has the same prefix.
+ */
+function tursoSettings(env: NodeJS.ProcessEnv): { url: string | null; token: string | null } {
+  const urlKey = str(env, 'TURSO_DATABASE_URL') ? 'TURSO_DATABASE_URL' : Object.keys(env).sort().find((k) => k.endsWith('_TURSO_DATABASE_URL') && str(env, k));
+  if (urlKey) {
+    const prefix = urlKey.slice(0, -'TURSO_DATABASE_URL'.length);
+    return { url: str(env, urlKey), token: str(env, `${prefix}TURSO_AUTH_TOKEN`) ?? str(env, 'TURSO_AUTH_TOKEN') };
+  }
+  return { url: str(env, 'DATABASE_URL'), token: str(env, 'DATABASE_AUTH_TOKEN') };
+}
+
 /** Validates configuration. Error messages never include secret values. */
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   let tokenKey: Buffer | null = null;
@@ -66,9 +80,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 
   const onVercel = !!str(env, 'VERCEL');
   const dataDir = resolve(str(env, 'DATA_DIR') ?? 'data');
-  // Turso's Vercel integration sets TURSO_DATABASE_URL / TURSO_AUTH_TOKEN.
-  const dbUrl = str(env, 'TURSO_DATABASE_URL') ?? str(env, 'DATABASE_URL') ?? (onVercel ? null : pathToFileURL(resolve(dataDir, 'local.db')).href);
-  if (!dbUrl) throw new ConfigError('TURSO_DATABASE_URL is not set. Connect a Turso database to this Vercel project (see DEPLOY.md).');
+  const turso = tursoSettings(env);
+  const dbUrl = turso.url ?? (onVercel ? null : pathToFileURL(resolve(dataDir, 'local.db')).href);
+  if (!dbUrl) {
+    // Names only (never values), to spot a misnamed setting.
+    const seen = Object.keys(env).filter((k) => /TURSO|LIBSQL|DATABASE/i.test(k) && str(env, k));
+    throw new ConfigError(
+      `TURSO_DATABASE_URL is not set. In Vercel: connect a Turso database to this project (Storage), then Redeploy (see DEPLOY.md, steps 3-4). Related settings found: ${seen.length ? seen.join(', ') : 'none'}.`,
+    );
+  }
   if (!/^(libsql|https?|wss?|file):/.test(dbUrl)) throw new ConfigError('TURSO_DATABASE_URL must start with libsql://, https:// or file:');
 
   const password = str(env, 'DASHBOARD_PASSWORD');
@@ -77,7 +97,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   if (cronSecret && cronSecret.length < 16) throw new ConfigError('CRON_SECRET must be at least 16 characters');
 
   return {
-    db: { url: dbUrl, authToken: str(env, 'TURSO_AUTH_TOKEN') ?? str(env, 'DATABASE_AUTH_TOKEN') },
+    db: { url: dbUrl, authToken: turso.token },
     onVercel,
     dashboardPassword: password,
     cronSecret,
