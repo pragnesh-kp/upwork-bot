@@ -27,7 +27,7 @@ Keep them somewhere safe (a password manager). Never put them on GitHub.
 ## 2. Create the Vercel project
 
 1. Sign in at [vercel.com](https://vercel.com) (you can use your GitHub account).
-2. **Add New → Project → Import Git Repository**, then pick **Pelicans-Technologies/upwork-bot**. If it isn't listed, use "Adjust GitHub App Permissions" to give Vercel access to that private repo.
+2. **Add New → Project → Import Git Repository**, then pick **pragnesh-kp/upwork-bot**. If it isn't listed, use "Adjust GitHub App Permissions" to give Vercel access to that private repo.
 3. Framework Preset: **Other**. Leave the build settings alone; `vercel.json` sets them (`npm ci`, `npm run build`).
 4. Click **Deploy**. The first deployment works, but the site reports missing settings until steps 3–4 are done.
 
@@ -132,4 +132,4 @@ Open **https://upwork.pelicanstechnologies.com** and enter your `DASHBOARD_PASSW
 
 * Upwork's terms: see the warning at the top of README.md. It applies on Vercel too.
 * Job data is deleted after `RETENTION_DAYS` (at most 30, per Upwork's terms).
-* Keep the repo **private**, and never commit `.env`.
+* Never commit `.env` or `data/`. A private repo is safer; to change it: GitHub → Settings → General → Danger Zone → Change visibility.
