@@ -1,0 +1,41 @@
+name: Scheduler
+
+# Calls the bot's /api/cron every 5 minutes. Vercel Hobby runs its own cron only once a day,
+# so this is what makes the searches automatic. Each call continues a running search, or
+# starts one for every filter whose 30 minutes (SEARCH_INTERVAL_MINUTES) have passed;
+# most calls do nothing. GitHub may start scheduled runs a few minutes late.
+#
+# Needs the repository secret CRON_SECRET (Settings → Secrets and variables → Actions),
+# with the same value as CRON_SECRET in the Vercel project.
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: scheduler
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Call /api/cron
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          APP_URL: https://upwork-bot-gules.vercel.app
+        run: |
+          if [ -z "$CRON_SECRET" ]; then
+            echo "::error::Add the repository secret CRON_SECRET (Settings → Secrets and variables → Actions), same value as in Vercel."
+            exit 1
+          fi
+          code=$(curl -sS -m 90 -o body.json -w '%{http_code}' -H "Authorization: Bearer $CRON_SECRET" "$APP_URL/api/cron")
+          cat body.json; echo
+          if [ "$code" != "200" ]; then
+            echo "::error::/api/cron answered HTTP $code. 401 means CRON_SECRET here differs from the one in Vercel."
+            exit 1
+          fi

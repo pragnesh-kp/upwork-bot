@@ -1,9 +1,9 @@
 # Deploying on Vercel
 
-The dashboard and the searches run on **Vercel** (free Hobby plan). The data lives in **Turso** (free hosted database). **cron-job.org** (free) calls the bot every 5 minutes so it searches about every 30 minutes, and your subdomain **upwork.pelicanstechnologies.com** points to it.
+The dashboard and the searches run on **Vercel** (free Hobby plan). The data lives in **Turso** (free hosted database). A **GitHub Actions** workflow (free) calls the bot every 5 minutes so it searches about every 30 minutes, and your subdomain **upwork.pelicanstechnologies.com** points to it.
 
 ```
-cron-job.org ──every 5 min──▶ https://upwork.pelicanstechnologies.com/api/cron ─┐
+GitHub Actions ─every 5 min─▶ https://upwork.pelicanstechnologies.com/api/cron ─┐
 your browser ──password────▶ https://upwork.pelicanstechnologies.com            ├─ Vercel functions ─▶ Turso database
                                                                                  └─ Upwork MCP (official)
 ```
@@ -75,15 +75,19 @@ TURSO_DATABASE_URL=libsql://…
 TURSO_AUTH_TOKEN=…
 ```
 
-## 6. Set up the scheduler (cron-job.org)
+## 6. Set up the scheduler (GitHub Actions)
 
-1. Create a free account at [cron-job.org](https://cron-job.org) and choose **Create cronjob**.
-2. **URL:** `https://upwork.pelicanstechnologies.com/api/cron`. Until your domain works (step 7), use the `https://<project>.vercel.app/api/cron` address Vercel shows.
-3. **Schedule:** every **5 minutes**.
-4. **Advanced → Headers:** add header `Authorization` with value `Bearer YOUR_CRON_SECRET` (the word `Bearer`, a space, then your secret).
-5. Request method **GET**, then save. Use **Test run**: the response should be `200` with a body like `{"status":"finished",…}` or `{"status":"idle"}`.
+Vercel's free plan runs its own scheduler only once a day, so the repository's workflow [`.github/workflows/scheduler.yml`](.github/workflows/scheduler.yml) calls `/api/cron` every 5 minutes instead. It is free for a public repository. It needs one secret:
 
-Most calls do nothing and return `idle`. A filter is searched again 30 minutes after its previous search. If cron-job.org shows `401`, the header is wrong. The dashboard's top line warns when the scheduler hasn't called for over 15 minutes. **The URL must work in your browser first:** until `upwork.pelicanstechnologies.com` resolves (step 7), cron-job.org must use the `https://<project>.vercel.app/api/cron` address, or every call fails.
+1. On GitHub: **pragnesh-kp/upwork-bot → Settings → Secrets and variables → Actions → New repository secret**.
+2. **Name:** `CRON_SECRET`. **Secret:** exactly the same value as `CRON_SECRET` in Vercel (step 4). Save.
+3. **Actions** tab → **Scheduler** → **Run workflow**. The run should be green and print `{"status":"idle"}` (or `finished` / `continued`).
+
+Most calls do nothing and return `idle`. A filter is searched again 30 minutes after its previous search. GitHub may start scheduled runs a few minutes late. A red run that says `HTTP 401` means the two `CRON_SECRET` values differ. The dashboard's top line warns when the scheduler hasn't called for over 20 minutes. If the address of the site changes, update `APP_URL` in the workflow file.
+
+GitHub pauses scheduled workflows in a public repository after 60 days without any commit; the Actions tab then offers to turn it back on.
+
+Instead of GitHub you can use any service that calls a URL every 5 minutes with the header `Authorization: Bearer <CRON_SECRET>` (for example cron-job.org).
 
 (Vercel also calls `/api/cron` once a day by itself, as a backup only.)
 
@@ -108,7 +112,7 @@ Open **https://upwork.pelicanstechnologies.com** and enter your `DASHBOARD_PASSW
 | Change the password | Change `DASHBOARD_PASSWORD` in Vercel, then Redeploy. Everyone is signed out. |
 | Upwork asks to sign in again (`Upwork sign-in expired…` on the dashboard) | Press **Reconnect Upwork** on the dashboard (step 5). |
 | Check from the PC | `npm run status` / `npm run filters` (with the Turso values in `.env`). |
-| Pause searching | Disable the job in cron-job.org. |
+| Pause searching | GitHub → **Actions → Scheduler → ⋯ → Disable workflow**. |
 
 ## Troubleshooting
 
@@ -116,8 +120,8 @@ Open **https://upwork.pelicanstechnologies.com** and enter your `DASHBOARD_PASSW
 | --- | --- |
 | `TURSO_DATABASE_URL is not set` | Step 3, then Redeploy. |
 | `Set DASHBOARD_PASSWORD…` | Step 4, then Redeploy. |
-| Dashboard: `⚠ the scheduler has not called yet` | Step 6. Check the URL and the `Authorization` header. |
-| cron-job.org: `401` | The header must be exactly `Bearer <CRON_SECRET>`, matching Vercel's value. |
+| Dashboard: `⚠ the scheduler has not called yet` | Step 6. Check the GitHub secret and the Actions tab. |
+| Scheduler run on GitHub fails with `HTTP 401` | The GitHub secret `CRON_SECRET` must equal Vercel's `CRON_SECRET` (and Vercel must be redeployed after changing it). |
 | `Cannot decrypt the stored Upwork sign-in` | `TOKEN_ENCRYPTION_KEY` in Vercel differs from the one used for `import`/`connect`. Make them equal, or run `npm run connect` again. |
 
 ## Local development

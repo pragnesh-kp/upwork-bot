@@ -2,7 +2,7 @@
 
 A small Node.js + TypeScript bot. About every 30 minutes it searches your saved Upwork job filters through the **official Upwork MCP server** (free with any Upwork account, no developer key) and lists every matching job on a password-protected dashboard. Each job appears **once**, even if later searches find it again, and links to the post on Upwork. No scraping.
 
-It runs on **Vercel** (functions + page) with a **Turso** database and an external scheduler (cron-job.org). **Setup: [DEPLOY.md](DEPLOY.md).**
+It runs on **Vercel** (functions + page) with a **Turso** database and a GitHub Actions workflow as the scheduler. **Setup: [DEPLOY.md](DEPLOY.md).**
 
 ## ⚠️ Read this first: Upwork's terms
 
@@ -21,7 +21,7 @@ Other terms the app follows: MCP data is kept at most 30 days (`RETENTION_DAYS`)
 ## How it works
 
 * **Search engine** (`src/engine.ts`): a search is a list of small tasks (one per filter and category, each with its page cursor) saved in the database. Each call does up to `STEP_BUDGET_SECONDS` (20) of work, saving after every page, and the next call continues. A database lock makes sure only one search runs at a time.
-* **Scheduler** (`/api/cron`, called by cron-job.org every 5 min with `Authorization: Bearer <CRON_SECRET>`): continues a running search, or starts one for every filter whose `SEARCH_INTERVAL_MINUTES` (30) have passed since that filter was last searched. Each filter keeps its own time, so searching one filter by hand never delays the others. The call answers within ~20 s (cron-job.org gives up after 30 s) and the search continues in the background on Vercel, so a whole search finishes in one call. Most calls do nothing. While the dashboard is open, it also starts due searches itself.
+* **Scheduler** (`/api/cron`, called every 5 min by the GitHub Actions workflow `.github/workflows/scheduler.yml` with `Authorization: Bearer <CRON_SECRET>`): continues a running search, or starts one for every filter whose `SEARCH_INTERVAL_MINUTES` (30) have passed since that filter was last searched. Each filter keeps its own time, so searching one filter by hand never delays the others. The call answers within ~20 s (external schedulers such as cron-job.org give up after 30 s) and the search continues in the background on Vercel, so a whole search finishes in one call. Most calls do nothing. While the dashboard is open, it also starts due searches itself.
 * **Paging:** Upwork returns 10 jobs per page, newest first. A filter's first search reads up to `FIRST_RUN_MAX_PAGES` (10) pages. After that, each search reads at least 2 and up to `MAX_PAGES_PER_FILTER` (3) pages, stopping once a page has nothing new. At least 2 pages, because Upwork's order isn't perfectly strict.
 * **Matching:** Upwork applies the keyword and categories. Budget, hourly rate and contract type are re-checked locally, and missing data is *unknown*, never 0. A job is labelled with a filter only if that filter's own search returned it.
 * **Retries:** up to 3 attempts per page with backoff, never sooner than Upwork's `retry_after_seconds`. A longer wait carries over to a later call. An expired sign-in stops the search and shows on the dashboard.
