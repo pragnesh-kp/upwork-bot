@@ -2,18 +2,22 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Config } from '../config.ts';
 import type { Store } from '../db.ts';
-import { getCycle, hasPendingWork, nextDueAt, progressOf, requestSearch, step, tick, type EngineDeps } from '../engine.ts';
+import { continueSearch, filterSchedules, getCycle, hasPendingWork, progressOf, requestSearch, step, tick, type EngineDeps } from '../engine.ts';
 import { defaultFilterName, filterProblems, MAX_FILTERS, parseUpworkSearchUrl, toFilterDefs } from '../filters.ts';
 import { log } from '../log.ts';
 import { loadDiscovery } from '../mcp/discover.ts';
 import { finishUpworkSignInFromUrl, startUpworkSignIn } from '../mcp/web-auth.ts';
 
 const STATES = new Set(['new', 'saved', 'reviewed', 'dismissed']);
+/** Review states that take a job off the "All" tab. */
+const DONE_STATES = ['reviewed', 'dismissed'];
 const COOKIE = 'ja_session';
 const SESSION_DAYS = 30;
 const LAST_CRON_KEY = 'last_cron_call';
 /** Wrong passwords allowed per 15 minutes, per IP and in total. */
 const LOGIN_LIMIT = { window: 15 * 60_000, perIp: 8, total: 40 };
+/** Search work after the scheduler has been answered (ms); the function's limit is 300 s. */
+const BACKGROUND_BUDGET_MS = 230_000;
 
 export const SECURITY_HEADERS: Record<string, string> = {
   'x-content-type-options': 'nosniff',
@@ -29,6 +33,12 @@ export interface HandlerDeps {
   interactiveBudgetMs?: number;
   /** Test hooks for the search engine (fake source, no sleeping). */
   engine?: Pick<EngineDeps, 'openSource' | 'sleep' | 'now'>;
+  /**
+   * Keeps the function running after the response until the promise settles (Vercel's
+   * waitUntil), read per request. Null where unavailable: the search then continues on
+   * the next scheduler call instead.
+   */
+  background?: () => ((p: Promise<unknown>) => void) | null;
 }
 
 type Handler = (req: IncomingMessage, res: ServerResponse) => Promise<void>;
@@ -132,6 +142,9 @@ export function createHandler(deps: HandlerDeps): Handler {
     const cycle = await getCycle(store);
     const last = (await store.lastRuns(1))[0];
     const shown = await store.listJobs({ filters: enabled, limit: 2000 });
+    const schedules = new Map((await filterSchedules(engine)).map((s) => [s.name, s]));
+    const nextDue = [...schedules.values()].map((s) => s.nextDueAt).sort()[0] ?? null;
+    const lastFinished = [...schedules.values()].map((s) => s.lastSearch?.finishedAt ?? '').sort().at(-1) || null;
     return {
       account: discovery ? `${discovery.account.name} (${discovery.account.roleLabel})` : null,
       /** Why the last search could not reach Upwork (e.g. an expired sign-in), if it could not. */
@@ -144,10 +157,19 @@ export function createHandler(deps: HandlerDeps): Handler {
         problems: filterProblems(f.params),
         total: counts.get(f.name)?.total ?? 0,
         newCount: counts.get(f.name)?.newCount ?? 0,
+        lastSearch: schedules.get(f.name)?.lastSearch ?? null,
+        nextDueAt: schedules.get(f.name)?.nextDueAt ?? null,
       })),
       filtersError: error,
       totals: { seen: shown.length, newJobs: await store.newJobCount(enabled) },
-      schedule: { intervalMinutes: cfg.intervalMinutes, nextDueAt: await nextDueAt(engine), lastSchedulerCall: await store.kvGet(LAST_CRON_KEY) },
+      schedule: {
+        intervalMinutes: cfg.intervalMinutes,
+        /** Earliest next automatic search among the enabled filters. */
+        nextDueAt: nextDue,
+        /** Most recent finished search of any enabled filter. */
+        lastSearchAt: lastFinished,
+        lastSchedulerCall: await store.kvGet(LAST_CRON_KEY),
+      },
       lastRun: last ? { startedAt: last.started_at, finishedAt: last.finished_at, status: last.status, summary: last.summary ? (JSON.parse(last.summary) as unknown) : null } : null,
       running: cycle ? progressOf(cycle) : (await hasPendingWork(store)) ? { pending: true } : null,
     };
@@ -164,6 +186,13 @@ export function createHandler(deps: HandlerDeps): Handler {
         if (!cfg.cronSecret || !safeEqual(auth, `Bearer ${cfg.cronSecret}`)) return send(res, 401, { error: 'Unauthorized' });
         await store.kvSet(LAST_CRON_KEY, new Date().toISOString());
         const r = await tick(engine);
+        // cron-job.org gives up after 30 s, so answer now and keep searching in the background:
+        // a whole search then fits in one call instead of moving 20 s forward every 5 minutes.
+        const bg = r.status === 'continued' ? deps.background?.() : null;
+        if (bg) {
+          bg(continueSearch(engine, BACKGROUND_BUDGET_MS).catch((err: Error) => log.error('background search failed', { error: err.message })));
+          return send(res, 200, { ...r, continuesInBackground: true });
+        }
         return send(res, 200, r);
       }
 
@@ -202,7 +231,9 @@ export function createHandler(deps: HandlerDeps): Handler {
         const enabled = defs.filter((f) => f.enabled).map((f) => f.name);
         const one = url.searchParams.get('filter');
         const stateParam = url.searchParams.get('state');
-        const jobs = await store.listJobs({ filters: one ? enabled.filter((n) => n === one) : enabled, state: stateParam && STATES.has(stateParam) ? stateParam : null, limit: 2000 });
+        const reviewState = stateParam && STATES.has(stateParam) ? stateParam : null;
+        // "All" lists the jobs still open: a reviewed or dismissed job moves to its own tab.
+        const jobs = await store.listJobs({ filters: one ? enabled.filter((n) => n === one) : enabled, state: reviewState, excludeStates: reviewState ? [] : DONE_STATES, limit: 2000 });
         return send(res, 200, { jobs });
       }
 
@@ -244,10 +275,9 @@ export function createHandler(deps: HandlerDeps): Handler {
             return send(res, 400, { error: (err as Error).message });
           }
         }
-        if (path === '/api/step') {
-          if (!(await hasPendingWork(store))) return send(res, 200, { status: 'idle' });
-          return send(res, 200, await step(engine, interactiveMs));
-        }
+        // While the dashboard is open it also starts searches that are due, so they run on time
+        // even when the external scheduler is not calling.
+        if (path === '/api/step') return send(res, 200, await tick(engine, interactiveMs));
         // POST /api/filters with action "add" or "remove".
         if (path === '/api/filters' && body.action === 'add') {
           const rawUrl = typeof body.url === 'string' ? body.url.trim() : '';

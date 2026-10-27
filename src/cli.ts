@@ -3,7 +3,7 @@ import { join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { ConfigError, loadConfig, loadEnvFile, type Config } from './config.ts';
 import { Store, type JobDetails } from './db.ts';
-import { getCycle, requestSearch, SOURCE, step, type RunSummary } from './engine.ts';
+import { filterSchedules, getCycle, requestSearch, SOURCE, step, type RunSummary } from './engine.ts';
 import { loadFilters, toFilterDefs, type FilterDef } from './filters.ts';
 import { configureLog, log } from './log.ts';
 import { discover, loadDiscovery, saveDiscovery, type Discovery } from './mcp/discover.ts';
@@ -188,6 +188,12 @@ async function main() {
       out(`Database: ${where(cfg)}`);
       out(`Upwork: ${d ? `connected as ${d.account.name} (discovered ${d.discoveredAt})` : 'not connected (npm run connect, then npm run discover)'}`);
       out(`Filters: ${(await store.listFilters()).map((f) => f.name).join(', ') || 'none'}`);
+      for (const s of await filterSchedules({ store, cfg })) {
+        const last = s.lastSearch ? `${s.lastSearch.finishedAt} (${s.lastSearch.status}, ${s.lastSearch.newJobs} new)` : 'never';
+        out(`  ${s.name}: last search ${last}, next due ${s.nextDueAt}`);
+      }
+      const call = await store.kvGet('last_cron_call');
+      out(`Scheduler last called: ${call ?? 'never'}`);
       out(`Jobs seen (last ${cfg.retentionDays} days): ${await store.seenCount()}`);
       const c = await getCycle(store);
       if (c) out(`Search in progress since ${c.startedAt}: ${c.tasks.filter((t) => t.done).length}/${c.tasks.length} done`);

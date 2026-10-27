@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { loadConfig, type Config } from '../src/config.ts';
 import { Store } from '../src/db.ts';
-import { getCycle, requestSearch, SOURCE, step, tick, type EngineDeps } from '../src/engine.ts';
+import { continueSearch, getCycle, nextDueAt, requestSearch, SOURCE, step, tick, type EngineDeps } from '../src/engine.ts';
 import { type FilterDef, type SearchTarget } from '../src/filters.ts';
 import { SourceError, type Job, type JobSource, type SearchPage } from '../src/sources/types.ts';
 
@@ -243,6 +243,58 @@ test('the scheduler starts a search when one is due and does nothing otherwise',
   clock.t = Date.now() + 29 * 60_000;
   assert.equal((await tick(deps)).status, 'finished', 'due within the 2-minute slack');
   assert.equal(src.calls, 2);
+});
+
+test('each filter has its own schedule: searching one by hand never delays the others', async () => {
+  const { store, src, clock, deps, add, search } = setup({ SEARCH_INTERVAL_MINUTES: '30' });
+  await add('React', 'react');
+  await add('Node', 'node');
+  src.market = [job('r', 'React developer'), job('n', 'Node developer')];
+  const t0 = clock.t;
+  const first = await tick(deps);
+  assert.equal(first.status, 'finished');
+  if (first.status === 'finished') assert.deepEqual(first.summary.filters.map((f) => f.name), ['React', 'Node']);
+
+  clock.t = t0 + 20 * 60_000;
+  await search('React');
+  const last = await store.filterLastSearches();
+  assert.equal(last.get('React')?.startedAt, new Date(t0 + 20 * 60_000).toISOString());
+  assert.equal(last.get('Node')?.startedAt, new Date(t0).toISOString());
+
+  clock.t = t0 + 29 * 60_000;
+  const nodeDue = await tick(deps);
+  assert.equal(nodeDue.status, 'finished', 'Node is still searched 30 min after its own last search');
+  if (nodeDue.status === 'finished') assert.deepEqual(nodeDue.summary.filters.map((f) => f.name), ['Node']);
+  assert.equal((await tick(deps)).status, 'idle', 'React is not due yet');
+
+  clock.t = t0 + 49 * 60_000;
+  const reactDue = await tick(deps);
+  if (reactDue.status !== 'finished') assert.fail(`expected finished, got ${reactDue.status}`);
+  assert.deepEqual(reactDue.summary.filters.map((f) => f.name), ['React']);
+  assert.equal(await nextDueAt(deps), new Date(t0 + 59 * 60_000).toISOString(), 'next: Node, 30 min after it started at +29');
+});
+
+test('a failed search still sets the next due time, so it is not retried on every call', async () => {
+  const { store, src, deps, add } = setup();
+  await add('React', 'react');
+  src.errors = [new SourceError('auth', 'Upwork authorization expired.')];
+  assert.equal((await tick(deps)).status, 'finished');
+  assert.equal((await store.filterLastSearches()).get('React')?.status, 'failed');
+  assert.equal((await tick(deps)).status, 'idle');
+  assert.equal(src.calls, 1);
+});
+
+test('continueSearch finishes a long search in one go, within its time budget', async () => {
+  const { store, src, clock, deps, add } = setup({ FIRST_RUN_MAX_PAGES: '10', STEP_BUDGET_SECONDS: '5' });
+  await add('React', 'react');
+  src.market = Array.from({ length: 20 }, (_, i) => job(`r${i}`, `React developer ${i}`));
+  const first = await tick(deps);
+  assert.equal(first.status, 'continued', 'one scheduler call alone cannot finish it');
+  const start = clock.t;
+  const r = await continueSearch(deps, 230_000);
+  assert.equal(r?.status, 'finished');
+  assert.ok(clock.t - start <= 230_000);
+  assert.equal((await store.listJobs({ filters: ['React'] })).length, 20);
 });
 
 test('the dashboard lists only jobs returned by the configured filters, labelled only with them', async () => {

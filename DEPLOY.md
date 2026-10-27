@@ -8,7 +8,7 @@ your browser ──password────▶ https://upwork.pelicanstechnologies.c
                                                                                  └─ Upwork MCP (official)
 ```
 
-Each call does about 20 seconds of work and saves its place, so a search that needs longer simply continues on the next call. While the dashboard is open, the page pushes searches forward itself.
+Each call answers after about 20 seconds of work and keeps searching in the background, saving its place after every page, so a search that needs longer still continues on the next call. While the dashboard is open, the page starts due searches and pushes them forward itself.
 
 > **Vercel Hobby is for personal, non-commercial use.** If this runs for your company's business, Vercel's terms may require the Pro plan. Check [vercel.com/docs/plans/hobby](https://vercel.com/docs/plans/hobby).
 
@@ -83,7 +83,7 @@ TURSO_AUTH_TOKEN=…
 4. **Advanced → Headers:** add header `Authorization` with value `Bearer YOUR_CRON_SECRET` (the word `Bearer`, a space, then your secret).
 5. Request method **GET**, then save. Use **Test run**: the response should be `200` with a body like `{"status":"finished",…}` or `{"status":"idle"}`.
 
-Most calls do nothing and return `idle`. A search starts when 30 minutes have passed since the last one, and runs over a few calls. If cron-job.org shows `401`, the header is wrong. The dashboard's top line warns when the scheduler hasn't called for over 30 minutes.
+Most calls do nothing and return `idle`. A filter is searched again 30 minutes after its previous search. If cron-job.org shows `401`, the header is wrong. The dashboard's top line warns when the scheduler hasn't called for over 15 minutes. **The URL must work in your browser first:** until `upwork.pelicanstechnologies.com` resolves (step 7), cron-job.org must use the `https://<project>.vercel.app/api/cron` address, or every call fails.
 
 (Vercel also calls `/api/cron` once a day by itself, as a backup only.)
 

@@ -6,6 +6,15 @@ import { createHandler, SECURITY_HEADERS } from './handler.ts';
 
 let handler: ((req: IncomingMessage, res: ServerResponse) => Promise<void>) | null = null;
 
+type RequestContext = { get?: () => { waitUntil?: (p: Promise<unknown>) => void } | undefined };
+
+/** Vercel's waitUntil for the current request (what @vercel/functions reads), or null. */
+function waitUntil(): ((p: Promise<unknown>) => void) | null {
+  const ctx = (globalThis as Record<symbol, RequestContext | undefined>)[Symbol.for('@vercel/request-context')]?.get?.();
+  const fn = ctx?.waitUntil;
+  return fn ? (p) => fn.call(ctx, p) : null;
+}
+
 /**
  * Vercel function entry (bundled by scripts/build-vercel.mjs). One instance can serve
  * many requests, so the configuration and the database client are created once.
@@ -15,7 +24,7 @@ export default async function vercelHandler(req: IncomingMessage, res: ServerRes
     try {
       const cfg = loadConfig(process.env);
       configureLog(cfg.logLevel, null);
-      handler = createHandler({ store: Store.open(cfg.db.url, cfg.db.authToken), cfg });
+      handler = createHandler({ store: Store.open(cfg.db.url, cfg.db.authToken), cfg, background: waitUntil });
     } catch (err) {
       // Configuration messages never contain secret values.
       const msg = err instanceof ConfigError ? err.message : 'Server configuration error';

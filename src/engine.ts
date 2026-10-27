@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { Config } from './config.ts';
-import type { JobDetails, Store } from './db.ts';
+import type { FilterLastSearch, JobDetails, Store } from './db.ts';
 import { matchJob, searchTargets, toFilterDefs, type FilterDef, type SearchTarget } from './filters.ts';
 import { budgetText, safeUpworkUrl } from './format.ts';
 import { log } from './log.ts';
@@ -134,7 +134,7 @@ async function absorbRequests(d: EngineDeps, cycle: Cycle | null): Promise<Cycle
   for (const k of keys) await d.store.kvDelete(k);
   const fresh = filters.filter((f) => !cycle?.filters.some((s) => s.name === f.name));
   if (!fresh.length) return cycle;
-  const c: Cycle = cycle ?? { id: randomUUID(), runId: await d.store.startRun(SOURCE), startedAt: new Date().toISOString(), tasks: [], filters: [], stoppedEarly: null, retryAfter: null };
+  const c: Cycle = cycle ?? { id: randomUUID(), runId: await d.store.startRun(SOURCE), startedAt: new Date((d.now ?? Date.now)()).toISOString(), tasks: [], filters: [], stoppedEarly: null, retryAfter: null };
   for (const f of fresh) {
     c.filters.push({
       name: f.name,
@@ -289,9 +289,12 @@ export async function step(d: EngineDeps, budgetMs: number): Promise<StepResult>
 }
 
 async function finish(d: EngineDeps, cycle: Cycle): Promise<RunSummary> {
+  const finishedAt = new Date((d.now ?? Date.now)()).toISOString();
   for (const f of cycle.filters) {
     for (const ig of f.ignoredFilters) log.warn('Upwork did not apply some filter terms', { filter: f.name, ignored: ig });
     if (f.firstRun && !f.error) await d.store.completeBaseline(SOURCE, f.name);
+    // Failed searches count too, so a broken filter or sign-in is retried next interval, not every call.
+    await d.store.recordFilterSearch(f.name, { startedAt: cycle.startedAt, finishedAt, status: f.error ? 'failed' : 'ok', newJobs: f.newJobs, error: f.error });
   }
   const failed = cycle.filters.filter((f) => f.error).length;
   const summary: RunSummary = {
@@ -307,23 +310,64 @@ async function finish(d: EngineDeps, cycle: Cycle): Promise<RunSummary> {
   return summary;
 }
 
-/** When the next automatic search is due (ISO), based on when the last one started. */
+/** Two minutes of slack, so a scheduler that fires every N minutes never skips a whole interval. */
+const DUE_SLACK_MS = 2 * 60_000;
+
+export interface FilterSchedule {
+  name: string;
+  lastSearch: FilterLastSearch | null;
+  /** When this filter's next automatic search is due (ISO); never searched = due now. */
+  nextDueAt: string;
+}
+
+/**
+ * Each enabled filter's own schedule: due SEARCH_INTERVAL_MINUTES after its last search
+ * started. Per filter, so searching one filter by hand never delays the others.
+ */
+export async function filterSchedules(d: EngineDeps): Promise<FilterSchedule[]> {
+  const now = d.now ?? Date.now;
+  const last = await d.store.filterLastSearches();
+  return (await enabledFilters(d.store)).map((f) => {
+    const s = last.get(f.name) ?? null;
+    return { name: f.name, lastSearch: s, nextDueAt: new Date(s ? Date.parse(s.startedAt) + d.cfg.intervalMinutes * 60_000 : now()).toISOString() };
+  });
+}
+
+/** When the next automatic search is due (ISO): the earliest of the enabled filters. */
 export async function nextDueAt(d: EngineDeps): Promise<string | null> {
-  const last = (await d.store.lastRuns(1))[0];
-  return last ? new Date(Date.parse(last.started_at) + d.cfg.intervalMinutes * 60_000).toISOString() : null;
+  const due = (await filterSchedules(d)).map((s) => s.nextDueAt).sort();
+  return due[0] ?? null;
 }
 
 /**
  * What the scheduler calls (every few minutes): continues a running search, or starts
- * a new one when SEARCH_INTERVAL_MINUTES have passed since the last one started.
+ * one for every filter whose SEARCH_INTERVAL_MINUTES have passed since its last search.
  */
-export async function tick(d: EngineDeps): Promise<StepResult> {
+export async function tick(d: EngineDeps, budgetMs = d.cfg.stepBudgetSeconds * 1000): Promise<StepResult> {
   const now = d.now ?? Date.now;
   if (!(await hasPendingWork(d.store))) {
-    const due = await nextDueAt(d);
-    // Two minutes of slack, so a scheduler that fires every N minutes never skips a whole interval.
-    if (due && Date.parse(due) - 2 * 60_000 > now()) return { status: 'idle' };
-    await requestSearch(d.store, null);
+    const all = await filterSchedules(d);
+    const due = all.filter((s) => Date.parse(s.nextDueAt) - DUE_SLACK_MS <= now());
+    if (!due.length) return { status: 'idle' };
+    if (due.length === all.length) await requestSearch(d.store, null);
+    else for (const s of due) await requestSearch(d.store, s.name);
   }
-  return step(d, d.cfg.stepBudgetSeconds * 1000);
+  return step(d, budgetMs);
+}
+
+/**
+ * Keeps a running search going for up to `totalMs` (in steps, each saving its place).
+ * Used after the scheduler has answered, so a search finishes in one scheduler call
+ * instead of moving forward 20 seconds every few minutes.
+ */
+export async function continueSearch(d: EngineDeps, totalMs: number): Promise<StepResult | null> {
+  const now = d.now ?? Date.now;
+  const started = now();
+  const budget = d.cfg.stepBudgetSeconds * 1000;
+  let r: StepResult | null = null;
+  while (now() - started + budget <= totalMs) {
+    r = await step(d, budget);
+    if (r.status !== 'continued') break;
+  }
+  return r;
 }

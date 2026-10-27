@@ -61,24 +61,67 @@ function clock(iso) {
   return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
+/** Time of day for today, otherwise also the day: "11:59 AM" or "Mon, 26 Oct, 6:26 PM". */
+function when(iso) {
+  const d = new Date(iso);
+  if (d.toDateString() === new Date().toDateString()) return clock(iso);
+  return d.toLocaleString([], { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+}
+
+function duration(ms) {
+  const mins = Math.max(0, Math.round(ms / 60000));
+  if (mins < 60) return `${mins} min`;
+  return mins % 60 ? `${Math.floor(mins / 60)} h ${mins % 60} min` : `${mins / 60} h`;
+}
+
+/** "in 12 min", or "overdue by 5 min" once the time has passed. */
+function until(iso) {
+  const ms = Date.parse(iso) - Date.now();
+  if (ms > 30000) return `in ${duration(ms)}`;
+  return ms > -60000 ? 'due now' : `overdue by ${duration(-ms)}`;
+}
+
+/** The scheduler (cron-job.org) should call every ~5 minutes; quieter than this means it is not working. */
+const SCHEDULER_QUIET_MS = 15 * 60000;
+
 function renderSchedule(s) {
   const box = $('schedule');
-  const parts = [];
+  box.replaceChildren();
+  const line = (label, value, cls) => {
+    const p = el('span', { class: `sched-item${cls ? ` ${cls}` : ''}` });
+    p.append(el('span', { class: 'muted' }, `${label} `), el('strong', {}, value));
+    box.append(p);
+  };
+  const sc = s.schedule;
   const r = s.running;
-  if (r && r.tasksTotal) parts.push(`Searching Upwork now… ${r.tasksDone}/${r.tasksTotal} searches done, ${r.newJobs} new job(s) so far${r.retryAfter ? ` (Upwork asked to wait until ${clock(r.retryAfter)})` : ''}`);
-  else if (r) parts.push('Search queued…');
-  else {
-    parts.push(`Automatic search every ~${s.schedule.intervalMinutes} min`);
-    if (s.schedule.nextDueAt) parts.push(Date.parse(s.schedule.nextDueAt) > Date.now() ? `next at ${clock(s.schedule.nextDueAt)}` : 'next on the scheduler\'s next call');
+  if (r && r.tasksTotal) line('Scanning now:', `${r.tasksDone}/${r.tasksTotal} searches done, ${r.newJobs} new job(s) so far${r.retryAfter ? ` (Upwork asked to wait until ${clock(r.retryAfter)})` : ''}`, 'busy');
+  else if (r) line('Scanning now:', 'starting…', 'busy');
+
+  line('Last scan:', sc.lastSearchAt ? `${when(sc.lastSearchAt)} (${ago(sc.lastSearchAt)})` : 'not yet');
+  const call = sc.lastSchedulerCall;
+  const quiet = !call || Date.now() - Date.parse(call) > SCHEDULER_QUIET_MS;
+  if (sc.nextDueAt && !r) {
+    const overdue = Date.parse(sc.nextDueAt) <= Date.now();
+    line('Next scan:', `${when(sc.nextDueAt)} (${until(sc.nextDueAt)})`, overdue && quiet ? 'warn' : '');
   }
-  if (s.lastRun?.finishedAt) parts.push(`last search ${ago(s.lastRun.finishedAt)} (${s.lastRun.status})`);
+  line('Every', `${sc.intervalMinutes} min, per filter`);
   // The external scheduler should call every few minutes; warn when it has gone quiet.
-  const call = s.schedule.lastSchedulerCall;
-  if (!call) parts.push('⚠ the scheduler has not called yet (see DEPLOY.md, step 6)');
-  else if (Date.now() - Date.parse(call) > 30 * 60000) parts.push(`⚠ the scheduler last called ${ago(call)}`);
+  if (!call) line('⚠ Scheduler:', 'has never called /api/cron. Scans only run while this page is open (see DEPLOY.md, step 6).', 'warn');
+  else if (quiet) line('⚠ Scheduler:', `last called ${when(call)} (${ago(call)}). Check the cron-job.org job; scans only run while this page is open.`, 'warn');
+  else line('Scheduler:', `last called ${ago(call)}`);
   const stopped = s.lastRun?.summary?.stoppedEarly;
-  if (stopped) parts.push(`⚠ ${stopped}`);
-  box.textContent = `${parts.join(' · ')}. Each job is listed once, even if a later search finds it again.`;
+  if (stopped) line('⚠', stopped, 'warn');
+}
+
+/** One line under each filter: when it was last searched and when it is searched next. */
+function filterSchedule(f) {
+  const box = el('div', { class: 'sched' });
+  const ls = f.lastSearch;
+  if (!ls) box.append(el('span', {}, 'Never scanned'));
+  else if (ls.status === 'failed') box.append(el('span', { class: 'warn', title: ls.error || '' }, `Last scan failed ${when(ls.finishedAt)}`));
+  else box.append(el('span', { title: `Started ${new Date(ls.startedAt).toLocaleString()}, finished ${new Date(ls.finishedAt).toLocaleString()}` }, `Last ${when(ls.finishedAt)} · ${ls.newJobs} new`));
+  if (f.enabled && f.nextDueAt) box.append(el('span', {}, ` · Next ${when(f.nextDueAt)}`));
+  return box;
 }
 
 function renderState(s) {
@@ -112,6 +155,7 @@ function renderState(s) {
       loadJobs();
     });
     li.append(b);
+    if (f) li.append(filterSchedule(f));
     if (f) {
       const tools = el('div', { class: 'tools' });
       if (f.problems.length) tools.append(el('span', { class: 'warn', title: `Not applied: ${f.problems.join('; ')}` }, '⚠ some Upwork filters not applied'));
@@ -142,11 +186,18 @@ function renderState(s) {
   btn.textContent = s.running ? 'Searching…' : view.filter ? 'Search this filter now' : 'Search all now';
   btn.title = view.filter ? `Search Upwork for "${view.filter}" now` : 'Search Upwork for all filters now';
   // While a search is running or queued (e.g. the first search of a new filter), this page pushes it
-  // forward itself instead of waiting for the scheduler, and refreshes so its jobs show up.
+  // forward itself instead of waiting for the scheduler, and refreshes so its jobs show up. It also
+  // starts scans that are due, so they run on time while the page is open even without the scheduler.
+  const due = s.schedule.nextDueAt && Date.parse(s.schedule.nextDueAt) <= Date.now();
   if (s.running) pushSearch();
+  else if (due && Date.now() - lastDuePush > 60000) {
+    lastDuePush = Date.now();
+    pushSearch();
+  }
 }
 
 let pushing = false;
+let lastDuePush = 0;
 async function pushSearch() {
   if (pushing) return;
   pushing = true;

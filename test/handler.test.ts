@@ -6,7 +6,7 @@ import { Store } from '../src/db.ts';
 import { SOURCE } from '../src/engine.ts';
 import type { FilterDef } from '../src/filters.ts';
 import type { Job, JobSource, SearchPage } from '../src/sources/types.ts';
-import { createHandler } from '../src/web/handler.ts';
+import { createHandler, type HandlerDeps } from '../src/web/handler.ts';
 
 const PASSWORD = 'correct horse battery';
 const CRON = 'cron-secret-0123456789';
@@ -25,11 +25,11 @@ class FakeSource implements JobSource {
   async close() {}
 }
 
-async function start(env: Record<string, string> = { DASHBOARD_PASSWORD: PASSWORD, CRON_SECRET: CRON }) {
+async function start(env: Record<string, string> = { DASHBOARD_PASSWORD: PASSWORD, CRON_SECRET: CRON }, extra: Pick<HandlerDeps, 'background'> & { now?: () => number; sleep?: (ms: number) => Promise<void> } = {}) {
   const store = Store.open(':memory:');
   const src = new FakeSource();
   const cfg = loadConfig({ DATA_DIR: 'data', TURSO_DATABASE_URL: 'file::memory:', TOKEN_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString('base64'), DELAY_BETWEEN_SEARCHES_MS: '0', ...env } as NodeJS.ProcessEnv);
-  const handler = createHandler({ store, cfg, engine: { openSource: async () => src, sleep: async () => {} } });
+  const handler = createHandler({ store, cfg, background: extra.background, engine: { openSource: async () => src, sleep: extra.sleep ?? (async () => {}), ...(extra.now ? { now: extra.now } : {}) } });
   const server: Server = createServer((req, res) => void handler(req, res));
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
   const port = (server.address() as { port: number }).port;
@@ -112,8 +112,38 @@ test('the scheduler endpoint needs the secret and then runs a due search', async
     const again = await t.call('GET', '/api/cron', { headers: { authorization: `Bearer ${CRON}` } });
     assert.equal(again.body.status, 'idle', 'not due again yet');
     await t.login();
-    const s = (await t.call('GET', '/api/state')).body as { schedule: { lastSchedulerCall: string | null } };
+    const s = (await t.call('GET', '/api/state')).body as {
+      schedule: { lastSchedulerCall: string | null; lastSearchAt: string | null; nextDueAt: string | null };
+      filters: { name: string; lastSearch: { finishedAt: string; status: string } | null; nextDueAt: string | null }[];
+    };
     assert.ok(s.schedule.lastSchedulerCall, 'the dashboard can show when the scheduler last called');
+    const f = s.filters[0]!;
+    assert.equal(f.lastSearch?.status, 'ok');
+    assert.equal(s.schedule.lastSearchAt, f.lastSearch?.finishedAt, 'last scan time');
+    assert.equal(Date.parse(f.nextDueAt!) - Date.parse(f.lastSearch!.finishedAt) <= 30 * 60_000, true);
+    assert.equal(s.schedule.nextDueAt, f.nextDueAt, 'next scan time');
+  } finally {
+    await t.close();
+  }
+});
+
+test('the scheduler answers quickly and finishes a long search in the background', async () => {
+  const clock = { t: Date.now() };
+  const pending: Promise<unknown>[] = [];
+  const t = await start(
+    { DASHBOARD_PASSWORD: PASSWORD, CRON_SECRET: CRON, DELAY_BETWEEN_SEARCHES_MS: '6000', STEP_BUDGET_SECONDS: '5' },
+    { background: () => (p) => void pending.push(p), now: () => clock.t, sleep: async (ms) => void (clock.t += ms) },
+  );
+  try {
+    for (const n of ['A', 'B', 'C']) await t.store.addFilter({ name: n, url: `https://www.upwork.com/nx/search/jobs?q=${n}`, enabled: true });
+    const r = await t.call('GET', '/api/cron', { headers: { authorization: `Bearer ${CRON}` } });
+    assert.equal(r.body.status, 'continued');
+    assert.equal(r.body.continuesInBackground, true);
+    assert.equal((r.body.progress as { tasksDone: number }).tasksDone, 1, 'the response did not wait for the whole search');
+    assert.equal(pending.length, 1);
+    await Promise.all(pending);
+    assert.equal(t.src.calls, 3, 'the background work searched the remaining filters');
+    assert.equal((await t.store.filterLastSearches()).size, 3);
   } finally {
     await t.close();
   }
@@ -181,6 +211,32 @@ test('"Search now" searches the chosen filter; review states filter the list', a
     assert.equal((await t.call('POST', '/api/jobs', { body: { source: SOURCE, jobId: 'job-React', state: 'hacked' } })).status, 400);
     const saved = (await t.call('GET', '/api/jobs?state=saved')).body.jobs as { jobId: string }[];
     assert.deepEqual(saved.map((j) => j.jobId), ['job-React']);
+  } finally {
+    await t.close();
+  }
+});
+
+test('a reviewed or dismissed job leaves the "All" list and shows only in its own tab', async () => {
+  const t = await start();
+  try {
+    await t.login();
+    for (const n of ['React', 'Node', 'Vue']) await t.store.addFilter({ name: n, url: `https://www.upwork.com/nx/search/jobs?q=${n}`, enabled: true });
+    await t.call('POST', '/api/search', { body: {} });
+    const ids = async (q = '') => ((await t.call('GET', `/api/jobs${q}`)).body.jobs as { jobId: string }[]).map((j) => j.jobId).sort();
+    assert.deepEqual(await ids(), ['job-Node', 'job-React', 'job-Vue']);
+
+    await t.call('POST', '/api/jobs', { body: { source: SOURCE, jobId: 'job-React', state: 'reviewed' } });
+    await t.call('POST', '/api/jobs', { body: { source: SOURCE, jobId: 'job-Node', state: 'dismissed' } });
+    await t.call('POST', '/api/jobs', { body: { source: SOURCE, jobId: 'job-Vue', state: 'saved' } });
+    assert.deepEqual(await ids(), ['job-Vue'], 'saved jobs stay in All; reviewed and dismissed ones move out');
+    assert.deepEqual(await ids('?state=reviewed'), ['job-React']);
+    assert.deepEqual(await ids('?state=dismissed'), ['job-Node']);
+    assert.deepEqual(await ids('?filter=React'), [], 'also when one filter is selected');
+    const s = (await t.call('GET', '/api/state')).body as { filters: { name: string; total: number }[] };
+    assert.deepEqual(s.filters.map((f) => [f.name, f.total]), [['React', 0], ['Node', 0], ['Vue', 1]], 'sidebar counts match the All list');
+
+    await t.call('POST', '/api/jobs', { body: { source: SOURCE, jobId: 'job-React', state: 'new' } });
+    assert.deepEqual(await ids(), ['job-React', 'job-Vue'], '"Mark new" brings it back');
   } finally {
     await t.close();
   }

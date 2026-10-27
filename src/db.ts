@@ -42,6 +42,15 @@ export interface StoredFilter {
   enabled: boolean;
 }
 
+/** A filter's most recent search (scheduled or manual); drives when it is searched next. */
+export interface FilterLastSearch {
+  startedAt: string;
+  finishedAt: string;
+  status: 'ok' | 'failed';
+  newJobs: number;
+  error: string | null;
+}
+
 export interface RunRow {
   id: number;
   source: string;
@@ -159,6 +168,8 @@ export class Store {
       for (const [name, type] of [['client_country', 'TEXT'], ['payment_verified', 'INTEGER'], ['proposals', 'TEXT']] as const) {
         if (!cols.has(name)) await this.db.execute(`ALTER TABLE job_details ADD COLUMN ${name} ${type}`);
       }
+      const fcols = new Set((await this.db.execute('PRAGMA table_info(filters)')).rows.map((r) => String(r.name)));
+      if (!fcols.has('last_search')) await this.db.execute('ALTER TABLE filters ADD COLUMN last_search TEXT');
     })();
     return this.ready;
   }
@@ -210,6 +221,16 @@ export class Store {
       [f.name, f.url, f.enabled ? 1 : 0, now()],
     );
     return res.rowsAffected === 1;
+  }
+
+  /** Each filter's most recent search, by filter name (filters never searched are absent). */
+  async filterLastSearches(): Promise<Map<string, FilterLastSearch>> {
+    const rows = (await this.run('SELECT name, last_search FROM filters WHERE last_search IS NOT NULL')).rows;
+    return new Map(rows.map((r) => [String(r.name), JSON.parse(String(r.last_search)) as FilterLastSearch]));
+  }
+
+  async recordFilterSearch(name: string, s: FilterLastSearch): Promise<void> {
+    await this.run('UPDATE filters SET last_search = ? WHERE name = ?', [JSON.stringify(s), name]);
   }
 
   /** Removes a filter and forgets its matches, its baseline, and jobs no other filter returned. */
@@ -300,7 +321,7 @@ export class Store {
    * Jobs for the dashboard: only jobs that one of these filters' own searches returned,
    * each naming only these filters (removed filters never show up).
    */
-  async listJobs(q: { filters: string[]; state?: string | null; limit?: number }): Promise<DashboardJob[]> {
+  async listJobs(q: { filters: string[]; state?: string | null; excludeStates?: string[]; limit?: number }): Promise<DashboardJob[]> {
     if (!q.filters.length) return [];
     const marks = q.filters.map(() => '?').join(',');
     const args: (string | number)[] = [...q.filters, ...q.filters];
@@ -308,6 +329,10 @@ export class Store {
     if (q.state) {
       where += ' AND d.review_state = ?';
       args.push(q.state);
+    }
+    if (q.excludeStates?.length) {
+      where += ` AND d.review_state NOT IN (${q.excludeStates.map(() => '?').join(',')})`;
+      args.push(...q.excludeStates);
     }
     args.push(Math.min(2000, Math.max(1, q.limit ?? 200)));
     const sql = `SELECT d.*, (SELECT json_group_array(filter_name) FROM job_matches m WHERE m.source = d.source AND m.job_id = d.job_id AND m.filter_name IN (${marks})) AS filters
@@ -343,14 +368,16 @@ export class Store {
     return Number(res.rows[0]?.n ?? 0);
   }
 
+  /** Per filter: jobs still open (what the "All" tab lists: not reviewed or dismissed) and unreviewed ones. */
   async filterCounts(): Promise<{ filter: string; total: number; newCount: number }[]> {
     const rows = (
       await this.run(
-        `SELECT m.filter_name AS filter, COUNT(*) AS total, SUM(CASE WHEN d.review_state = 'new' THEN 1 ELSE 0 END) AS newCount
+        `SELECT m.filter_name AS filter, SUM(CASE WHEN d.review_state NOT IN ('reviewed', 'dismissed') THEN 1 ELSE 0 END) AS total,
+           SUM(CASE WHEN d.review_state = 'new' THEN 1 ELSE 0 END) AS newCount
          FROM job_matches m JOIN job_details d ON d.source = m.source AND d.job_id = m.job_id GROUP BY m.filter_name`,
       )
     ).rows;
-    return rows.map((r) => ({ filter: String(r.filter), total: Number(r.total), newCount: Number(r.newCount ?? 0) }));
+    return rows.map((r) => ({ filter: String(r.filter), total: Number(r.total ?? 0), newCount: Number(r.newCount ?? 0) }));
   }
 
   async setReviewState(source: string, jobId: string, state: 'new' | 'saved' | 'dismissed' | 'reviewed'): Promise<boolean> {
