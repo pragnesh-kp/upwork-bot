@@ -1,9 +1,9 @@
 # Deploying on Vercel
 
-The dashboard and the searches run on **Vercel** (free Hobby plan). The data lives in **Turso** (free hosted database). A **GitHub Actions** workflow (free) calls the bot every 5 minutes so it searches about every 30 minutes, and your subdomain **upwork.pelicanstechnologies.com** points to it.
+The dashboard and the searches run on **Vercel** (free Hobby plan). The data lives in **Turso** (free hosted database). A **GitHub Actions** workflow (free) calls the bot every 30 minutes so it searches about every 30–60 minutes, and your subdomain **upwork.pelicanstechnologies.com** points to it.
 
 ```
-GitHub Actions ─every 5 min─▶ https://upwork.pelicanstechnologies.com/api/cron ─┐
+GitHub Actions ─every 30 min▶ https://upwork.pelicanstechnologies.com/api/cron ─┐
 your browser ──password────▶ https://upwork.pelicanstechnologies.com            ├─ Vercel functions ─▶ Turso database
                                                                                  └─ Upwork MCP (official)
 ```
@@ -77,17 +77,17 @@ TURSO_AUTH_TOKEN=…
 
 ## 6. Set up the scheduler (GitHub Actions)
 
-Vercel's free plan runs its own scheduler only once a day, so the repository's workflow [`.github/workflows/scheduler.yml`](.github/workflows/scheduler.yml) calls `/api/cron` every 5 minutes instead. It is free for a public repository. It needs one secret:
+Vercel's free plan runs its own scheduler only once a day, so the repository's workflow [`.github/workflows/scheduler.yml`](.github/workflows/scheduler.yml) calls `/api/cron` every 30 minutes instead. It is free for a public repository. It needs one secret:
 
 1. On GitHub: **pragnesh-kp/upwork-bot → Settings → Secrets and variables → Actions → New repository secret**.
 2. **Name:** `CRON_SECRET`. **Secret:** exactly the same value as `CRON_SECRET` in Vercel (step 4). Save.
 3. **Actions** tab → **Scheduler** → **Run workflow**. The run should be green and print `{"status":"idle"}` (or `finished` / `continued`).
 
-Most calls do nothing and return `idle`. A filter is searched again 30 minutes after its previous search. GitHub may start scheduled runs a few minutes late. A red run that says `HTTP 401` means the two `CRON_SECRET` values differ. The dashboard's top line warns when the scheduler hasn't called for over 20 minutes. If the address of the site changes, update `APP_URL` in the workflow file.
+A filter is due again 30 minutes after its previous search and is searched on the next call, so with GitHub's delays a filter can wait up to about an hour. A red run that says `HTTP 401` means the two `CRON_SECRET` values differ. The dashboard's top line warns when the scheduler hasn't called for over 60 minutes. If the address of the site changes, update `APP_URL` in the workflow file.
 
 GitHub pauses scheduled workflows in a public repository after 60 days without any commit; the Actions tab then offers to turn it back on.
 
-Instead of GitHub you can use any service that calls a URL every 5 minutes with the header `Authorization: Bearer <CRON_SECRET>` (for example cron-job.org).
+Instead of GitHub you can use any service that calls a URL every 30 minutes with the header `Authorization: Bearer <CRON_SECRET>` (for example cron-job.org).
 
 (Vercel also calls `/api/cron` once a day by itself, as a backup only.)
 

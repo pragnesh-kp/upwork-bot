@@ -81,8 +81,8 @@ function until(iso) {
   return ms > -60000 ? 'due now' : `overdue by ${duration(-ms)}`;
 }
 
-/** The scheduler (GitHub Actions) should call every ~5 minutes, sometimes late; quieter than this means it is not working. */
-const SCHEDULER_QUIET_MS = 20 * 60000;
+/** The scheduler (GitHub Actions) should call every ~30 minutes, sometimes late; quieter than this means it is not working. */
+const SCHEDULER_QUIET_MS = 60 * 60000;
 
 function renderSchedule(s) {
   const box = $('schedule');
@@ -105,7 +105,7 @@ function renderSchedule(s) {
     line('Next scan:', `${when(sc.nextDueAt)} (${until(sc.nextDueAt)})`, overdue && quiet ? 'warn' : '');
   }
   line('Every', `${sc.intervalMinutes} min, per filter`);
-  // The external scheduler should call every few minutes; warn when it has gone quiet.
+  // The external scheduler should call every 30 minutes; warn when it has gone quiet.
   if (!call) line('⚠ Scheduler:', 'has never called /api/cron. Scans only run while this page is open (see DEPLOY.md, step 6).', 'warn');
   else if (quiet) line('⚠ Scheduler:', `last called ${when(call)} (${ago(call)}). Check the Scheduler workflow on GitHub (Actions tab); scans only run while this page is open.`, 'warn');
   else line('Scheduler:', `last called ${ago(call)}`);
