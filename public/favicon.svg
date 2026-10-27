@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-7.2 0 120 120">
+  <title>Pelicans Technologies</title>
+  <defs>
+    <linearGradient id="pm-a" x1="34.43" y1="124.96" x2="41.02" y2="89.37" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#00bfff"/>
+      <stop offset="0.7" stop-color="#0042ff"/>
+    </linearGradient>
+    <linearGradient id="pm-b" x1="97.27" y1="66.48" x2="26.5" y2="-6" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#00c8ff"/>
+      <stop offset="1" stop-color="#0042ff"/>
+    </linearGradient>
+    <linearGradient id="pm-c" x1="16.9" y1="105.75" x2="111.99" y2="45.47" gradientUnits="userSpaceOnUse">
+      <stop offset="0.35" stop-color="#00bfff"/>
+      <stop offset="1" stop-color="#0042e1"/>
+    </linearGradient>
+  </defs>
+  <g transform="translate(-8.43 -5)">
+    <path fill="url(#pm-a)" d="M23.94,110.59v8.94A5.48,5.48,0,0,0,29.42,125H42.09a5.48,5.48,0,0,0,5.48-5.48V100.63a5.54,5.54,0,0,1,5.54-5.54S31.34,91,23.94,110.59Z"/>
+    <path fill="url(#pm-b)" d="M102.87,20.62A46,46,0,0,0,68.3,5H57.17a3.69,3.69,0,0,0-3.69,3.69V24.2a3.69,3.69,0,0,1-3.69,3.69h-14a3.69,3.69,0,0,1-3.69-3.69V9.43a3.69,3.69,0,0,0-3.69-3.69H12.13A3.69,3.69,0,0,0,8.43,9.43V25.68a3.69,3.69,0,0,0,3.69,3.69H26.89a3.69,3.69,0,0,1,3.69,3.69V47.83a3.69,3.69,0,0,0,3.69,3.69H50.53a3.69,3.69,0,0,0,3.69-3.69V32.32a3.69,3.69,0,0,1,3.69-3.69H68.53c11.65,0,21.52,9.12,21.86,20.77A21.44,21.44,0,0,1,69,71.46S120.74,73.5,102.87,20.62Z"/>
+    <path fill="url(#pm-c)" d="M102.87,20.62C120.74,73.5,69,71.46,69,71.46H43.14a19.2,19.2,0,0,0-19.2,19.2v19.93C31.34,91,53.11,95.09,53.11,95.09H69a45.1,45.1,0,0,0,45-45.75A44.34,44.34,0,0,0,102.87,20.62Z"/>
+  </g>
+</svg>

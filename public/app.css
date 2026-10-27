@@ -55,10 +55,7 @@ button, select, input { font: inherit; color: inherit; }
 }
 .brand { display: flex; gap: 12px; align-items: center; }
 .brand p { margin: 0; font-size: 12px; }
-.logo {
-  display: grid; place-items: center; width: 34px; height: 34px; border-radius: 10px;
-  background: linear-gradient(135deg, #4f46e5, #9333ea); color: #fff; font-size: 18px;
-}
+.logo { display: block; width: 34px; height: 34px; }
 .actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 select, input[type="search"] {
   height: 34px; padding: 0 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel);
