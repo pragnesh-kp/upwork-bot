@@ -21,6 +21,32 @@ function el(tag, props = {}, text) {
   return e;
 }
 
+/**
+ * Centered dialog in place of confirm()/alert(), which phones draw at the top of the screen.
+ * Resolves true when the main button is pressed; Esc, Cancel or a tap outside resolve false.
+ */
+function popup({ title, message = '', ok = 'OK', cancel = 'Cancel', tone = 'info' }) {
+  const d = $('modal');
+  if (d.open) d.close('cancel');
+  $('modal-title').textContent = title;
+  $('modal-msg').textContent = message;
+  $('modal-ok').textContent = ok;
+  $('modal-cancel').hidden = !cancel;
+  if (cancel) $('modal-cancel').textContent = cancel;
+  d.dataset.tone = tone;
+  d.returnValue = '';
+  d.showModal();
+  // Destructive questions start on Cancel, so a stray Enter doesn't delete anything.
+  $(cancel ? 'modal-cancel' : 'modal-ok').focus();
+  return new Promise((resolve) => d.addEventListener('close', () => resolve(d.returnValue === 'ok'), { once: true }));
+}
+const confirmDanger = (title, message, ok) => popup({ title, message, ok, tone: 'danger' });
+const showError = (message) => popup({ title: 'Something went wrong', message, cancel: null, tone: 'error' });
+$('modal-ok').addEventListener('click', () => $('modal').close('ok'));
+$('modal-cancel').addEventListener('click', () => $('modal').close('cancel'));
+// Clicks on the dimmed backdrop land on the <dialog> itself; the box covers the rest.
+$('modal').addEventListener('click', (e) => { if (e.target === $('modal')) $('modal').close('cancel'); });
+
 class LoginRequired extends Error {}
 
 async function api(path, body) {
@@ -167,14 +193,14 @@ function renderState(s) {
       const open = el('a', { href: safeUpworkUrl(f.url) || '#', target: '_blank', rel: 'noopener noreferrer', title: 'Open this search on Upwork' }, 'Open on Upwork ↗');
       const rm = el('button', { type: 'button', class: 'link danger', title: `Remove "${f.name}"` }, 'Remove');
       rm.addEventListener('click', async () => {
-        if (!confirm(`Remove the filter "${f.name}"?\n\nIts jobs disappear from the dashboard and it is no longer searched.`)) return;
+        if (!await confirmDanger(`Remove "${f.name}"?`, 'Its jobs disappear from the dashboard and it is no longer searched.', 'Remove filter')) return;
         rm.disabled = true;
         try {
           await api('/api/filters', { action: 'remove', name: f.name });
           if (view.filter === f.name) selectFilter('');
           await refresh();
         } catch (err) {
-          alert(err.message);
+          if (!(err instanceof LoginRequired)) showError(err.message);
           rm.disabled = false;
         }
       });
@@ -367,13 +393,13 @@ function renderJobs(jobs) {
       const act = b.dataset.act;
       if (act === j.reviewState || (act === 'new' && j.reviewState === 'new')) b.hidden = true;
       b.addEventListener('click', async () => {
-        if (act === 'delete' && !confirm(`Delete "${j.title}"?\n\nIt is removed from the dashboard and never fetched again.`)) return;
+        if (act === 'delete' && !await confirmDanger('Delete this job?', `"${j.title}"\n\nIt is removed from the dashboard and never fetched again.`, 'Delete')) return;
         b.disabled = true;
         try {
           await api('/api/jobs', act === 'delete' ? { source: j.source, jobId: j.jobId, delete: true } : { source: j.source, jobId: j.jobId, state: act });
           await refresh();
         } catch (err) {
-          alert(err.message);
+          if (!(err instanceof LoginRequired)) showError(err.message);
           b.disabled = false;
         }
       });
@@ -406,6 +432,7 @@ function showRunResult(summary, error) {
   box.className = `run-result${error ? ' error' : ''}`;
   if (error) {
     box.replaceChildren(el('strong', {}, 'Search failed: '), document.createTextNode(error));
+    addCloseButton(box);
     return;
   }
   const head = el('div');
@@ -422,6 +449,13 @@ function showRunResult(summary, error) {
   }
   box.replaceChildren(head, ul);
   if (summary.stoppedEarly) box.append(el('p', { class: 'err' }, `Stopped early: ${summary.stoppedEarly}`));
+  addCloseButton(box);
+}
+
+function addCloseButton(box) {
+  const x = el('button', { type: 'button', class: 'close', 'aria-label': 'Dismiss', title: 'Dismiss' });
+  x.addEventListener('click', () => void (box.hidden = true));
+  box.prepend(x);
 }
 
 $('run').addEventListener('click', async () => {
@@ -536,6 +570,7 @@ function showNotice(text, isError = false) {
   box.hidden = false;
   box.className = `run-result${isError ? ' error' : ''}`;
   box.replaceChildren(el('strong', {}, text));
+  addCloseButton(box);
 }
 
 $('login-form').addEventListener('submit', async (e) => {
