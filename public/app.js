@@ -393,7 +393,6 @@ function renderJobs(jobs) {
       const act = b.dataset.act;
       if (act === j.reviewState || (act === 'new' && j.reviewState === 'new')) b.hidden = true;
       b.addEventListener('click', async () => {
-        if (act === 'delete' && !await confirmDanger('Delete this job?', `"${j.title}"\n\nIt is removed from the dashboard and never fetched again.`, 'Delete')) return;
         b.disabled = true;
         try {
           await api('/api/jobs', act === 'delete' ? { source: j.source, jobId: j.jobId, delete: true } : { source: j.source, jobId: j.jobId, state: act });
