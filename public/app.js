@@ -6,6 +6,10 @@ const view = { filter: '', state: '', q: '', day: '' };
 try { view.filter = localStorage.getItem(SAVED_FILTER) || ''; } catch { /* storage unavailable */ }
 let loadedJobs = [];
 let lastState = null;
+/** Descriptions longer than this fold to a few lines on phones. */
+const SNIPPET_FOLD_CHARS = 180;
+/** Jobs whose description was opened with "Show more" (kept across the 30-second refresh). */
+const expandedJobs = new Set();
 
 function el(tag, props = {}, text) {
   const e = document.createElement(tag);
@@ -151,6 +155,7 @@ function renderState(s) {
     b.append(c);
     b.addEventListener('click', () => {
       selectFilter(name);
+      setFiltersOpen(false);
       renderState(lastState);
       loadJobs();
     });
@@ -180,6 +185,12 @@ function renderState(s) {
   };
   list.replaceChildren(item(null), ...s.filters.map((f) => item(f)));
   if (s.filtersError) list.append(el('li', { class: 'muted' }, s.filtersError));
+
+  // The folded filter list on phones shows which filter is picked and its new jobs.
+  const picked = s.filters.find((f) => f.name === view.filter);
+  const pickedNew = picked ? picked.newCount : all;
+  $('filters-current').replaceChildren(el('span', { class: 'ft-name' }, picked ? picked.name : 'All filters'));
+  if (pickedNew) $('filters-current').append(el('b', {}, `${pickedNew} new`));
 
   const btn = $('run');
   btn.disabled = !!s.running;
@@ -215,6 +226,13 @@ async function pushSearch() {
     pushing = false;
   }
 }
+
+/** Opens or folds the filter list (folding only shows on phones; on wide screens the list is always open). */
+function setFiltersOpen(open) {
+  $('sidebar').classList.toggle('open', open);
+  $('filters-toggle').setAttribute('aria-expanded', String(open));
+}
+$('filters-toggle').addEventListener('click', () => setFiltersOpen(!$('sidebar').classList.contains('open')));
 
 function selectFilter(name) {
   view.filter = name;
@@ -320,7 +338,25 @@ function renderJobs(jobs) {
     if (j.clientPaymentVerified !== null) add('Payment', j.clientPaymentVerified ? 'verified' : 'not verified');
     if (j.proposals) add('Proposals', j.proposals);
 
-    n.querySelector('.snippet').textContent = j.snippet || '';
+    const snippet = n.querySelector('.snippet');
+    snippet.textContent = j.snippet || '';
+    // Phones show the first lines of a long description; "Show more" opens the rest.
+    const more = n.querySelector('.more');
+    if ((j.snippet || '').length > SNIPPET_FOLD_CHARS) {
+      more.hidden = false;
+      const key = `${j.source}:${j.jobId}`;
+      const show = (open) => {
+        snippet.classList.toggle('expanded', open);
+        more.textContent = open ? 'Show less' : 'Show more';
+        more.setAttribute('aria-expanded', String(open));
+      };
+      show(expandedJobs.has(key));
+      more.addEventListener('click', () => {
+        const open = !expandedJobs.has(key);
+        if (open) expandedJobs.add(key); else expandedJobs.delete(key);
+        show(open);
+      });
+    }
     const chips = n.querySelector('.chips');
     for (const f of j.filters) chips.append(el('span', { class: 'chip filter' }, f));
     for (const s of j.skills.slice(0, 8)) chips.append(el('span', { class: 'chip' }, s));

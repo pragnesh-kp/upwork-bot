@@ -163,21 +163,7 @@ button.link.danger { color: #dc2626; }
 .job-actions .open:hover { text-decoration: underline; }
 .empty { padding: 32px; text-align: center; border: 1px dashed var(--border); border-radius: var(--radius); color: var(--muted); background: var(--panel); }
 
-@media (max-width: 820px) {
-  .layout { grid-template-columns: 1fr; padding: 12px 16px 32px; }
-  .topbar { padding: 12px 16px; position: static; }
-  .notice, .run-result { margin-left: 16px; margin-right: 16px; }
-  .sidebar { position: static; padding: 10px; }
-  .sidebar ul { display: flex; overflow-x: auto; gap: 4px; padding-bottom: 4px; }
-  .segmented { max-width: 100%; overflow-x: auto; }
-  .actions { width: 100%; }
-  .actions select { flex: 1 1 auto; min-width: 0; }
-  .sidebar li button { white-space: nowrap; }
-  .sidebar li { flex: 0 0 auto; }
-  .sidebar .sched, .sidebar .tools { white-space: nowrap; flex-wrap: nowrap; }
-  .job-actions .open { margin-left: 0; }
-}
-.login { min-height: 100vh; display: grid; place-items: center; padding: 16px; box-sizing: border-box; }
+.login { min-height: 100vh; min-height: 100dvh; display: grid; place-items: center; padding: 16px; box-sizing: border-box; }
 .login[hidden], #app[hidden] { display: none; }
 .login-box { width: min(340px, 100%); display: grid; gap: 8px; background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 24px; }
 .login-box h1 { margin: 0 0 8px; font-size: 20px; }
@@ -190,3 +176,133 @@ button.link.danger { color: #dc2626; }
 .connect-panel code { font-size: 12px; }
 .connect-panel form { display: flex; gap: 8px; flex-wrap: wrap; }
 .connect-panel input { flex: 1 1 320px; font: inherit; padding: 6px 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); color: inherit; }
+
+/* Show more (phones only) and the folded filter list's button (phones only). */
+.more { display: none; }
+.filters-toggle { display: none; }
+.day-buttons { display: flex; gap: 6px; }
+.day-buttons [hidden] { display: none; }
+button, a, summary { -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
+
+/* --- Tablets and phones: one column ------------------------------------------- */
+@media (max-width: 820px) {
+  :root { --gutter: 16px; }
+  .layout {
+    grid-template-columns: 1fr; gap: 12px;
+    padding: 12px max(var(--gutter), env(safe-area-inset-right)) calc(32px + env(safe-area-inset-bottom)) max(var(--gutter), env(safe-area-inset-left));
+  }
+  .topbar {
+    padding: max(12px, env(safe-area-inset-top)) max(var(--gutter), env(safe-area-inset-right)) 12px max(var(--gutter), env(safe-area-inset-left));
+    position: static; gap: 10px;
+  }
+  .brand { min-width: 0; flex: 1 1 auto; }
+  .brand > div { min-width: 0; }
+  .notice, .run-result, .connect-panel { margin-left: max(var(--gutter), env(safe-area-inset-left)); margin-right: max(var(--gutter), env(safe-area-inset-right)); }
+  .actions { margin-left: auto; }
+
+  /* Filters fold behind one button; tapping it opens the full list. */
+  .sidebar { position: static; padding: 0; overflow: hidden; }
+  .sidebar-title { display: none; }
+  .filters-toggle {
+    display: flex; align-items: center; gap: 8px; width: 100%; height: auto; min-height: 48px;
+    padding: 10px 14px; border: 0; border-radius: 0; background: transparent; text-align: left;
+  }
+  .ft-label { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+  .ft-current { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 8px; font-weight: 600; }
+  .ft-current .ft-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ft-current b { flex: none; font-size: 12px; padding: 2px 8px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); }
+  .ft-arrow { flex: none; color: var(--muted); transition: transform 0.15s; }
+  .sidebar.open .ft-arrow { transform: rotate(180deg); }
+  .filters-body { display: none; padding: 0 10px 12px; border-top: 1px solid var(--border); }
+  .sidebar.open .filters-body { display: block; }
+  .sidebar ul { margin-top: 8px; gap: 4px; }
+  .sidebar li button.pick { min-height: 44px; padding: 8px 10px; }
+  .sidebar .sched { padding: 0 10px 4px; font-size: 12px; }
+  .sidebar .tools { gap: 4px 16px; padding: 0 10px 8px; }
+  .sidebar .tools a, .sidebar .tools button.link { display: inline-flex; align-items: center; min-height: 32px; font-size: 13px; }
+  .add-box summary { padding: 8px 0; }
+
+  /* Search, date and tabs: full width, easy to tap. */
+  .toolbar { gap: 8px; }
+  .toolbar input[type="search"] { flex: 1 1 100%; width: 100%; }
+  .datepick { width: 100%; flex-wrap: nowrap; }
+  .datepick label { flex: none; }
+  .datepick input[type="date"] { flex: 1 1 auto; min-width: 0; height: 40px; }
+  .day-buttons { flex: none; }
+  .segmented { display: flex; width: 100%; }
+  .segmented button { flex: 1 1 0; min-width: 0; padding: 0 6px; }
+
+  /* Job cards: badges above the title, roomier buttons. */
+  .job { padding: 14px; }
+  .job-head { flex-direction: column; gap: 6px; }
+  .badges { order: -1; justify-content: flex-start; }
+  .badges:empty { display: none; }
+  .job-actions { gap: 8px; }
+  .job-actions button { height: 40px; font-size: 13px; padding: 0 14px; }
+  .job-actions .open { margin-left: 0; }
+
+  /* Inputs at 16px: iPhones zoom the page into any smaller field. */
+  input, select, textarea { font-size: 16px !important; }
+  button, select, input[type="search"] { min-height: 40px; }
+  button.link { min-height: 0; }
+}
+
+/* --- Phones ---------------------------------------------------------------------- */
+@media (max-width: 560px) {
+  h1 { font-size: 17px; }
+  .brand p { font-size: 11.5px; line-height: 1.4; }
+  .logo { width: 30px; height: 30px; }
+  .topbar { flex-direction: column; align-items: stretch; }
+  .actions { width: 100%; margin-left: 0; }
+  .actions button { flex: 1 1 auto; min-height: 44px; }
+
+  .notice { font-size: 12.5px; gap: 2px 14px; margin-top: 10px; }
+  .run-result { padding: 10px 12px; }
+  .connect-panel { padding: 12px 14px; }
+  .connect-panel ol { padding-left: 18px; }
+  .connect-panel input { flex: 1 1 100%; min-width: 0; }
+  .connect-panel form button { flex: 1 1 0; min-height: 44px; }
+
+  /* Date: "Posted on [date]" on one line, Today / Yesterday / All dates under it. */
+  .datepick { flex-wrap: wrap; }
+  .datepick input[type="date"] { flex: 1 1 140px; }
+  .day-buttons { flex: 1 1 100%; }
+  .day-buttons button { flex: 1 1 0; }
+
+  .list-title { margin: 2px 0 8px; }
+  .day { font-size: 14px; margin-top: 10px; }
+  .title { font-size: 15px; line-height: 1.35; }
+  .meta { gap: 2px 12px; font-size: 12.5px; }
+  .snippet { font-size: 13.5px; }
+  /* Long descriptions show four lines until "Show more". */
+  .snippet:not(.expanded) { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4; line-clamp: 4; overflow: hidden; }
+  .more:not([hidden]) {
+    display: inline-block; height: auto; min-height: 32px; margin-top: 2px; padding: 4px 0; border: 0; background: none;
+    font-size: 13px; font-weight: 600; color: var(--accent);
+  }
+  .chips { gap: 4px; }
+  .chip { font-size: 11.5px; }
+
+  /* Save / Reviewed / Delete share one row; "Open on Upwork" gets its own full-width row. */
+  .job-actions button { flex: 1 1 0; min-width: 0; padding: 0 6px; white-space: nowrap; }
+  .job-actions .open {
+    flex: 1 1 100%; display: flex; align-items: center; justify-content: center; min-height: 44px;
+    border: 1px solid var(--accent); border-radius: 8px; background: var(--accent-soft); font-size: 14px;
+  }
+  .empty { padding: 24px 16px; }
+}
+
+/* --- Very narrow phones (iPhone SE 1st gen, small Androids) ------------------------ */
+@media (max-width: 360px) {
+  :root { --gutter: 12px; }
+  .job { padding: 12px; }
+  .job-actions button { font-size: 12px; padding: 0 4px; }
+  .segmented button { font-size: 13px; padding: 0 4px; }
+  .datepick input[type="date"] { flex-basis: 120px; }
+}
+
+/* Phones turned sideways: short screens, so keep the header compact. */
+@media (max-height: 500px) and (orientation: landscape) {
+  .topbar { flex-direction: row; align-items: center; }
+  .actions { width: auto; }
+}

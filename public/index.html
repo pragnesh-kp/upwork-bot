@@ -2,7 +2,9 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#181b22" media="(prefers-color-scheme: dark)" />
     <title>Job Alerts</title>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="stylesheet" href="/app.css" />
@@ -54,8 +56,15 @@
     </section>
 
     <div class="layout">
-      <nav class="sidebar" aria-label="Filters">
-        <h2>Filters</h2>
+      <nav id="sidebar" class="sidebar" aria-label="Filters">
+        <h2 class="sidebar-title">Filters</h2>
+        <!-- Phones: the filter list folds behind this button, so the jobs stay near the top. -->
+        <button id="filters-toggle" class="filters-toggle" type="button" aria-expanded="false" aria-controls="filters-body">
+          <span class="ft-label">Filter</span>
+          <span id="filters-current" class="ft-current">All filters</span>
+          <span class="ft-arrow" aria-hidden="true">▾</span>
+        </button>
+        <div id="filters-body" class="filters-body">
         <ul id="filters"></ul>
         <details id="add-box" class="add-box">
           <summary>+ Add filter</summary>
@@ -68,17 +77,20 @@
             <p id="add-msg" class="add-msg" hidden></p>
           </form>
         </details>
+        </div>
       </nav>
 
       <main>
         <div class="toolbar">
-          <input id="q" type="search" placeholder="Search title, description or skills (e.g. node js, fullstack)" aria-label="Search jobs" />
+          <input id="q" type="search" placeholder="Search jobs or skills (e.g. node js)" aria-label="Search title, description or skills" enterkeyhint="search" />
           <div class="datepick">
             <label for="day">Posted on</label>
             <input id="day" type="date" />
-            <button id="day-today" type="button">Today</button>
-            <button id="day-yesterday" type="button">Yesterday</button>
-            <button id="day-clear" type="button" hidden>All dates</button>
+            <div class="day-buttons">
+              <button id="day-today" type="button">Today</button>
+              <button id="day-yesterday" type="button">Yesterday</button>
+              <button id="day-clear" type="button" hidden>All dates</button>
+            </div>
           </div>
           <div class="segmented" role="tablist" aria-label="Review state">
             <button data-state="" class="active" role="tab">All</button>
@@ -100,6 +112,7 @@
         </div>
         <div class="meta"></div>
         <p class="snippet"></p>
+        <button class="more" type="button" hidden aria-expanded="false">Show more</button>
         <div class="chips"></div>
         <div class="job-actions">
           <button data-act="saved" type="button">☆ Save</button>
