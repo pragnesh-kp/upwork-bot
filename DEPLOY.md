@@ -101,7 +101,7 @@ Instead of GitHub you can use any service that calls a URL every 30 minutes with
 
 ## 8. Log in
 
-Open **https://upwork.pelicanstechnologies.com** and enter your `DASHBOARD_PASSWORD`. Everything works as before: filters, Add filter / Remove, calendar, search, Save / Reviewed / Dismiss, **Search now**.
+Open **https://upwork.pelicanstechnologies.com** and enter your `DASHBOARD_PASSWORD`. Everything works as before: filters, Add filter / Remove, calendar, search, Save / Reviewed / Delete, **Search now**.
 
 ## Everyday
 

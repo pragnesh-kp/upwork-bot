@@ -96,6 +96,13 @@ CREATE TABLE IF NOT EXISTS job_matches (
   matched_at TEXT NOT NULL,
   PRIMARY KEY (source, job_id, filter_name)
 );
+-- Jobs deleted from the dashboard: only the id, so a later search never adds them back.
+CREATE TABLE IF NOT EXISTS deleted_jobs (
+  source TEXT NOT NULL,
+  job_id TEXT NOT NULL,
+  deleted_at TEXT NOT NULL,
+  PRIMARY KEY (source, job_id)
+);
 CREATE TABLE IF NOT EXISTS filter_baselines (
   source TEXT NOT NULL,
   filter_name TEXT NOT NULL,
@@ -170,6 +177,17 @@ export class Store {
       }
       const fcols = new Set((await this.db.execute('PRAGMA table_info(filters)')).rows.map((r) => String(r.name)));
       if (!fcols.has('last_search')) await this.db.execute('ALTER TABLE filters ADD COLUMN last_search TEXT');
+      // "Dismiss" was replaced by "Delete": jobs dismissed before become deleted jobs.
+      if ((await this.db.execute("SELECT 1 FROM job_details WHERE review_state = 'dismissed' LIMIT 1")).rows.length) {
+        await this.db.batch(
+          [
+            { sql: "INSERT INTO deleted_jobs (source, job_id, deleted_at) SELECT source, job_id, ? FROM job_details WHERE review_state = 'dismissed' ON CONFLICT DO NOTHING", args: [now()] },
+            `DELETE FROM job_matches AS t WHERE EXISTS (SELECT 1 FROM job_details d WHERE d.source = t.source AND d.job_id = t.job_id AND d.review_state = 'dismissed')`,
+            "DELETE FROM job_details WHERE review_state = 'dismissed'",
+          ],
+          'write',
+        );
+      }
     })();
     return this.ready;
   }
@@ -276,6 +294,24 @@ export class Store {
     return (await this.seenIds(source, [jobId])).has(jobId);
   }
 
+  /** Which of these job ids were deleted from the dashboard (never added back). */
+  async deletedIds(source: string, ids: string[]): Promise<Set<string>> {
+    if (!ids.length) return new Set();
+    const rows = (await this.run(`SELECT job_id FROM deleted_jobs WHERE source = ? AND job_id IN (${ids.map(() => '?').join(',')})`, [source, ...ids])).rows;
+    return new Set(rows.map((r) => String(r.job_id)));
+  }
+
+  /** Deletes a job from the dashboard and remembers its id, so no later search brings it back. */
+  async deleteJob(source: string, jobId: string): Promise<boolean> {
+    if (!(await this.run('SELECT 1 FROM job_details WHERE source = ? AND job_id = ?', [source, jobId])).rows.length) return false;
+    await this.batch([
+      { sql: 'INSERT INTO deleted_jobs (source, job_id, deleted_at) VALUES (?, ?, ?) ON CONFLICT DO NOTHING', args: [source, jobId, now()] },
+      { sql: 'DELETE FROM job_matches WHERE source = ? AND job_id = ?', args: [source, jobId] },
+      { sql: 'DELETE FROM job_details WHERE source = ? AND job_id = ?', args: [source, jobId] },
+    ]);
+    return true;
+  }
+
   /**
    * Records one page of a filter's results in one transaction: the job is marked
    * seen, its dashboard fields are stored, and the filter is recorded as a match.
@@ -368,11 +404,11 @@ export class Store {
     return Number(res.rows[0]?.n ?? 0);
   }
 
-  /** Per filter: jobs still open (what the "All" tab lists: not reviewed or dismissed) and unreviewed ones. */
+  /** Per filter: jobs still open (what the "All" tab lists: not reviewed) and unreviewed ones. */
   async filterCounts(): Promise<{ filter: string; total: number; newCount: number }[]> {
     const rows = (
       await this.run(
-        `SELECT m.filter_name AS filter, SUM(CASE WHEN d.review_state NOT IN ('reviewed', 'dismissed') THEN 1 ELSE 0 END) AS total,
+        `SELECT m.filter_name AS filter, SUM(CASE WHEN d.review_state <> 'reviewed' THEN 1 ELSE 0 END) AS total,
            SUM(CASE WHEN d.review_state = 'new' THEN 1 ELSE 0 END) AS newCount
          FROM job_matches m JOIN job_details d ON d.source = m.source AND d.job_id = m.job_id GROUP BY m.filter_name`,
       )
@@ -380,7 +416,7 @@ export class Store {
     return rows.map((r) => ({ filter: String(r.filter), total: Number(r.total ?? 0), newCount: Number(r.newCount ?? 0) }));
   }
 
-  async setReviewState(source: string, jobId: string, state: 'new' | 'saved' | 'dismissed' | 'reviewed'): Promise<boolean> {
+  async setReviewState(source: string, jobId: string, state: 'new' | 'saved' | 'reviewed'): Promise<boolean> {
     return (await this.run('UPDATE job_details SET review_state = ? WHERE source = ? AND job_id = ?', [state, source, jobId])).rowsAffected === 1;
   }
 
@@ -438,15 +474,28 @@ export class Store {
 
   // --- retention ------------------------------------------------------------
 
-  /** Retention: drop job identifiers and history older than `days`. */
-  async purge(days: number): Promise<void> {
+  /**
+   * Retention: drop job identifiers and history older than `days`, and jobs posted more
+   * than `maxJobAgeDays` ago (saved jobs stay until the retention limit).
+   */
+  async purge(days: number, maxJobAgeDays?: number): Promise<void> {
     const cutoff = new Date(Date.now() - days * 86_400_000).toISOString();
+    const tooOld: InStatement[] = [];
+    if (maxJobAgeDays) {
+      const ageCutoff = new Date(Date.now() - maxJobAgeDays * 86_400_000).toISOString();
+      tooOld.push(
+        { sql: "DELETE FROM job_details WHERE posted_at IS NOT NULL AND posted_at < ? AND review_state <> 'saved'", args: [ageCutoff] },
+        'DELETE FROM job_matches AS t WHERE NOT EXISTS (SELECT 1 FROM job_details d WHERE d.source = t.source AND d.job_id = t.job_id)',
+      );
+    }
     await this.batch([
+      ...tooOld,
       // Counted from first retrieval, so re-seeing a job never extends how long its content is kept.
       { sql: 'DELETE FROM job_details WHERE first_seen_at < ?', args: [cutoff] },
       { sql: 'DELETE FROM seen_jobs WHERE last_seen_at < ?', args: [cutoff] },
       { sql: 'DELETE FROM job_matches WHERE matched_at < ?', args: [cutoff] },
       { sql: 'DELETE FROM runs WHERE started_at < ?', args: [cutoff] },
+      { sql: 'DELETE FROM deleted_jobs WHERE deleted_at < ?', args: [cutoff] },
     ]);
   }
 }

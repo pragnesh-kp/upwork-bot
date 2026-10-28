@@ -13,7 +13,7 @@ const job = (id: string, title: string, over: Partial<Job> = {}): Job => ({
   title,
   url: `https://www.upwork.com/jobs/~${id}`,
   description: 'desc',
-  postedAt: '2026-10-25T10:00:00.000Z',
+  postedAt: new Date(Date.now() - 3_600_000).toISOString(),
   contractType: 'FIXED',
   fixedBudget: 3000,
   hourlyMin: null,
@@ -306,4 +306,50 @@ test('the dashboard lists only jobs returned by the configured filters, labelled
   assert.deepEqual(jobs.map((j) => [j.jobId, j.filters]), [['a', ['AI Developer']]]);
   assert.equal((await store.listJobs({ filters: [] })).length, 0);
   assert.equal(await store.newJobCount(['AI Developer']), 1);
+});
+
+test('jobs posted more than MAX_JOB_AGE_DAYS ago are not fetched, and paging stops at a page of only old jobs', async () => {
+  const { store, src, deps, add } = setup({ FIRST_RUN_MAX_PAGES: '10' });
+  await add('React', 'react');
+  const daysAgo = (n: number) => new Date(Date.now() - n * 86_400_000).toISOString();
+  src.market = [
+    job('fresh1', 'React fresh 1', { postedAt: daysAgo(0.5) }),
+    job('fresh2', 'React fresh 2', { postedAt: daysAgo(2.5) }),
+    job('old1', 'React old 1', { postedAt: daysAgo(4) }),
+    job('old2', 'React old 2', { postedAt: daysAgo(5) }),
+    job('old3', 'React old 3', { postedAt: daysAgo(6) }),
+    job('old4', 'React old 4', { postedAt: daysAgo(7) }),
+  ];
+  await requestSearch(store, null);
+  assert.equal((await step(deps, 60_000)).status, 'finished');
+  assert.deepEqual((await store.listJobs({ filters: ['React'] })).map((j) => j.jobId).sort(), ['fresh1', 'fresh2']);
+  assert.equal(src.calls, 2, 'the second page is all old, so the third is never read');
+});
+
+test('a deleted job is removed and never added back by a later search', async () => {
+  const { store, src, deps, add } = setup();
+  await add('React', 'react');
+  src.market = [job('r1', 'React one'), job('r2', 'React two')];
+  await requestSearch(store, null);
+  await step(deps, 60_000);
+  assert.equal(await store.deleteJob(SOURCE, 'r1'), true);
+  assert.equal(await store.deleteJob(SOURCE, 'r1'), false, 'already gone');
+  await requestSearch(store, null);
+  await step(deps, 60_000);
+  assert.deepEqual((await store.listJobs({ filters: ['React'] })).map((j) => j.jobId), ['r2']);
+});
+
+test('purge clears jobs posted too long ago, but keeps saved ones', async () => {
+  const store = Store.open(':memory:');
+  const d = (id: string, postedAt: string | null) => ({ id, title: id, url: null, budget: '', contractType: null, postedAt, snippet: null, skills: [] });
+  const old = new Date(Date.now() - 5 * 86_400_000).toISOString();
+  await store.saveJobs(SOURCE, 'F', [
+    { details: d('old', old), baseline: false },
+    { details: d('oldSaved', old), baseline: false },
+    { details: d('fresh', new Date().toISOString()), baseline: false },
+    { details: d('noDate', null), baseline: false },
+  ]);
+  await store.setReviewState(SOURCE, 'oldSaved', 'saved');
+  await store.purge(30, 3);
+  assert.deepEqual((await store.listJobs({ filters: ['F'] })).map((j) => j.jobId).sort(), ['fresh', 'noDate', 'oldSaved']);
 });

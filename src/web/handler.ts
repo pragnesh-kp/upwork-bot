@@ -8,9 +8,9 @@ import { log } from '../log.ts';
 import { loadDiscovery } from '../mcp/discover.ts';
 import { finishUpworkSignInFromUrl, startUpworkSignIn } from '../mcp/web-auth.ts';
 
-const STATES = new Set(['new', 'saved', 'reviewed', 'dismissed']);
+const STATES = new Set(['new', 'saved', 'reviewed']);
 /** Review states that take a job off the "All" tab. */
-const DONE_STATES = ['reviewed', 'dismissed'];
+const DONE_STATES = ['reviewed'];
 const COOKIE = 'ja_session';
 const SESSION_DAYS = 30;
 const LAST_CRON_KEY = 'last_cron_call';
@@ -232,18 +232,24 @@ export function createHandler(deps: HandlerDeps): Handler {
         const one = url.searchParams.get('filter');
         const stateParam = url.searchParams.get('state');
         const reviewState = stateParam && STATES.has(stateParam) ? stateParam : null;
-        // "All" lists the jobs still open: a reviewed or dismissed job moves to its own tab.
+        // "All" lists the jobs still open: a reviewed job moves to its own tab.
         const jobs = await store.listJobs({ filters: one ? enabled.filter((n) => n === one) : enabled, state: reviewState, excludeStates: reviewState ? [] : DONE_STATES, limit: 2000 });
         return send(res, 200, { jobs });
       }
 
       if (req.method === 'POST') {
         const body = await readJson(req);
-        // POST /api/jobs sets a review state (one function per path; Vercel Hobby allows 12).
+        // POST /api/jobs sets a review state, or deletes the job for good with { delete: true }
+        // (one function per path; Vercel Hobby allows 12).
         if (path === '/api/jobs') {
+          if (typeof body.source !== 'string' || typeof body.jobId !== 'string') return send(res, 400, { error: 'Invalid request' });
+          if (body.delete === true) {
+            const ok = await store.deleteJob(body.source, body.jobId);
+            return send(res, ok ? 200 : 404, ok ? { ok: true } : { error: 'Job not found' });
+          }
           const s = String(body.state ?? '');
-          if (!STATES.has(s) || typeof body.source !== 'string' || typeof body.jobId !== 'string') return send(res, 400, { error: 'Invalid request' });
-          const ok = await store.setReviewState(body.source, body.jobId, s as 'new' | 'saved' | 'reviewed' | 'dismissed');
+          if (!STATES.has(s)) return send(res, 400, { error: 'Invalid request' });
+          const ok = await store.setReviewState(body.source, body.jobId, s as 'new' | 'saved' | 'reviewed');
           return send(res, ok ? 200 : 404, ok ? { ok: true } : { error: 'Job not found' });
         }
         if (path === '/api/search') {

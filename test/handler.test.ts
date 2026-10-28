@@ -216,7 +216,7 @@ test('"Search now" searches the chosen filter; review states filter the list', a
   }
 });
 
-test('a reviewed or dismissed job leaves the "All" list and shows only in its own tab', async () => {
+test('a reviewed job moves to its own tab; a deleted job is gone and never fetched again', async () => {
   const t = await start();
   try {
     await t.login();
@@ -226,11 +226,15 @@ test('a reviewed or dismissed job leaves the "All" list and shows only in its ow
     assert.deepEqual(await ids(), ['job-Node', 'job-React', 'job-Vue']);
 
     await t.call('POST', '/api/jobs', { body: { source: SOURCE, jobId: 'job-React', state: 'reviewed' } });
-    await t.call('POST', '/api/jobs', { body: { source: SOURCE, jobId: 'job-Node', state: 'dismissed' } });
+    assert.equal((await t.call('POST', '/api/jobs', { body: { source: SOURCE, jobId: 'job-Node', state: 'dismissed' } })).status, 400, 'no more "dismissed"');
+    assert.equal((await t.call('POST', '/api/jobs', { body: { source: SOURCE, jobId: 'job-Node', delete: true } })).status, 200);
+    assert.equal((await t.call('POST', '/api/jobs', { body: { source: SOURCE, jobId: 'job-Node', delete: true } })).status, 404);
     await t.call('POST', '/api/jobs', { body: { source: SOURCE, jobId: 'job-Vue', state: 'saved' } });
-    assert.deepEqual(await ids(), ['job-Vue'], 'saved jobs stay in All; reviewed and dismissed ones move out');
+    assert.deepEqual(await ids(), ['job-Vue'], 'saved jobs stay in All; reviewed and deleted ones move out');
     assert.deepEqual(await ids('?state=reviewed'), ['job-React']);
-    assert.deepEqual(await ids('?state=dismissed'), ['job-Node']);
+
+    await t.call('POST', '/api/search', { body: { filter: 'Node' } });
+    assert.deepEqual(await ids('?filter=Node'), [], 'a deleted job is not fetched again');
     assert.deepEqual(await ids('?filter=React'), [], 'also when one filter is selected');
     const s = (await t.call('GET', '/api/state')).body as { filters: { name: string; total: number }[] };
     assert.deepEqual(s.filters.map((f) => [f.name, f.total]), [['React', 0], ['Node', 0], ['Vue', 1]], 'sidebar counts match the All list');

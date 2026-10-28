@@ -248,9 +248,15 @@ export async function step(d: EngineDeps, budgetMs: number): Promise<StepResult>
           fs.returned += page.jobs.length;
           for (const ig of page.ignoredFilters) if (!fs.ignoredFilters.includes(ig)) fs.ignoredFilters.push(ig);
           if (page.emptyReason) fs.emptyReason = page.emptyReason;
-          const seen = await store.seenIds(SOURCE, page.jobs.map((j) => j.id));
+          const ids = page.jobs.map((j) => j.id);
+          const seen = await store.seenIds(SOURCE, ids);
+          const deleted = await store.deletedIds(SOURCE, ids);
+          const oldestAllowed = now() - cfg.maxJobAgeDays * 86_400_000;
+          const tooOld = (job: Job) => !!job.postedAt && Date.parse(job.postedAt) < oldestAllowed;
           const keep: { details: JobDetails; baseline: boolean }[] = [];
           for (const job of page.jobs) {
+            // Deleted on the dashboard, or posted more than MAX_JOB_AGE_DAYS ago: never stored.
+            if (deleted.has(job.id) || tooOld(job)) continue;
             // Upwork applied this filter's keyword and category; re-check budget, rate and type locally.
             const m = matchJob(job, f!.criteria, { trustKeyword: true });
             if (!m.matched) {
@@ -269,6 +275,8 @@ export async function step(d: EngineDeps, budgetMs: number): Promise<StepResult>
           task.cursor = page.nextCursor;
           const maxPages = fs.firstRun ? cfg.search.firstRunMaxPages : cfg.search.maxPagesPerFilter;
           if (!task.cursor) task.done = true;
+          // Newest first: a page where every job is too old means the older pages are too.
+          else if (page.jobs.length > 0 && page.jobs.every(tooOld)) task.done = true;
           // Newest first: once a whole page is already known, older pages are too. Upwork's order is
           // not perfectly strict, so always read at least MIN_PAGES before stopping.
           else if (!fs.firstRun && unseen === 0 && task.pages >= MIN_PAGES) task.done = true;
@@ -303,7 +311,7 @@ async function finish(d: EngineDeps, cycle: Cycle): Promise<RunSummary> {
     newJobs: cycle.filters.reduce((n, f) => n + f.newJobs, 0),
     stoppedEarly: cycle.stoppedEarly,
   };
-  await d.store.purge(d.cfg.retentionDays);
+  await d.store.purge(d.cfg.retentionDays, d.cfg.maxJobAgeDays);
   await d.store.finishRun(cycle.runId, summary.status, summary);
   await d.store.kvDelete(CYCLE_KEY);
   log.info('search finished', { status: summary.status, newJobs: summary.newJobs, stoppedEarly: summary.stoppedEarly });

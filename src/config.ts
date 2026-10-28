@@ -29,6 +29,8 @@ export interface Config {
   /** Local `npm run dev` only. */
   dev: { port: number; dataDir: string };
   retentionDays: number;
+  /** Jobs posted longer ago than this are not fetched (and are cleared from the dashboard unless saved). */
+  maxJobAgeDays: number;
   logLevel: 'debug' | 'info' | 'warn' | 'error';
 }
 
@@ -129,6 +131,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     dev: { port: int(env, 'DASHBOARD_PORT', 5174, 1024, 65535), dataDir },
     // Upwork's API & MCP Terms (s. 8.6): MCP outputs may be kept no longer than 30 days.
     retentionDays: int(env, 'RETENTION_DAYS', 30, 1, 30),
+    maxJobAgeDays: int(env, 'MAX_JOB_AGE_DAYS', 3, 1, 30),
     logLevel: level,
   };
 }

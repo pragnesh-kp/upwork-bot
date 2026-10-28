@@ -283,7 +283,7 @@ function withDayHeaders(jobs, cards) {
 
 function renderJobs(jobs) {
   const shown = jobs;
-  const stateLabel = { new: 'New jobs', saved: 'Saved jobs', reviewed: 'Reviewed jobs', dismissed: 'Dismissed jobs', '': 'All jobs' }[view.state];
+  const stateLabel = { new: 'New jobs', saved: 'Saved jobs', reviewed: 'Reviewed jobs', '': 'All jobs' }[view.state];
   const extra = [view.filter, view.day ? `posted ${dayLabel(`${view.day}T12:00:00`)}` : null, view.q ? `"${view.q}"` : null].filter(Boolean);
   $('list-title').textContent = `${stateLabel}${extra.map((x) => ` · ${x}`).join('')} (${shown.length})`;
   const box = $('jobs');
@@ -331,9 +331,10 @@ function renderJobs(jobs) {
       const act = b.dataset.act;
       if (act === j.reviewState || (act === 'new' && j.reviewState === 'new')) b.hidden = true;
       b.addEventListener('click', async () => {
+        if (act === 'delete' && !confirm(`Delete "${j.title}"?\n\nIt is removed from the dashboard and never fetched again.`)) return;
         b.disabled = true;
         try {
-          await api('/api/jobs', { source: j.source, jobId: j.jobId, state: act });
+          await api('/api/jobs', act === 'delete' ? { source: j.source, jobId: j.jobId, delete: true } : { source: j.source, jobId: j.jobId, state: act });
           await refresh();
         } catch (err) {
           alert(err.message);

@@ -201,8 +201,8 @@ async function main() {
       return;
     }
     case 'purge': {
-      await store.purge(cfg.retentionDays);
-      out(`Deleted job data older than ${cfg.retentionDays} days.`);
+      await store.purge(cfg.retentionDays, cfg.maxJobAgeDays);
+      out(`Deleted job data older than ${cfg.retentionDays} days, and unsaved jobs posted more than ${cfg.maxJobAgeDays} days ago.`);
       return;
     }
     case 'disconnect': {

@@ -15,7 +15,7 @@ Other terms the app follows: MCP data is kept at most 30 days (`RETENTION_DAYS`)
 * **Every matching job, grouped by posting date** (Today, Yesterday, …), with budget, posting time, client details, matched filters and an **Open on Upwork ↗** link.
 * **Posted on** calendar (plus Today / Yesterday) and a search box over title, description and skills (`node js`, `nodejs` and `Node.js` all match).
 * **Filters** in the left sidebar: click one to see only its jobs. **+ Add filter** takes a link copied from the Upwork search page, and its first search starts right away. **Remove** deletes a filter and its jobs. A link is refused if it uses an Upwork filter the bot can't apply yet (it names which one); otherwise the bot would list jobs outside your filter.
-* **Search now** searches the selected filter (or all of them). **Just found** marks jobs from the latest search. Save / Reviewed / Dismiss sort them.
+* **Search now** searches the selected filter (or all of them). **Just found** marks jobs from the latest search. Save / Reviewed sort them; Delete removes a job for good (it is never fetched again). Jobs posted more than 3 days ago (`MAX_JOB_AGE_DAYS`) are not fetched.
 * The top line shows the last and next scan (date, time and how long ago / until), live progress, and warnings: an expired Upwork sign-in, or a scheduler that stopped calling. Each filter in the sidebar shows its own last scan (and new jobs found) and next scan.
 
 ## How it works
