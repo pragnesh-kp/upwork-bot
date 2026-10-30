@@ -65,19 +65,33 @@
     </nav>
 
     <section id="insights" class="insights" hidden aria-label="Insights">
-      <div class="toolbar ins-toolbar">
-        <div class="datepick">
-          <label for="ins-day">Day</label>
-          <input id="ins-day" type="date" />
-          <div class="day-buttons">
-            <button id="ins-24h" type="button" class="on">Last 24 hours</button>
-            <button id="ins-today" type="button">Today</button>
-            <button id="ins-yesterday" type="button">Yesterday</button>
+      <div id="ins-alert" class="ins-alert" hidden></div>
+      <div class="ins-layout">
+        <aside class="ins-side" aria-label="Configured filters">
+          <div class="ins-side-head">
+            <h2>Configured filters</h2>
+            <span id="ins-active" class="pill"></span>
           </div>
+          <ul id="ins-filters" class="ins-filters"></ul>
+        </aside>
+        <div class="ins-main">
+          <div class="toolbar ins-toolbar">
+            <label class="ins-select">
+              <span class="ins-select-label">Filter:</span>
+              <select id="ins-filter" aria-label="Filter shown in Insights"></select>
+            </label>
+            <span id="ins-scope" class="chip filter"></span>
+            <div class="ins-range-pills" role="group" aria-label="Period">
+              <button id="ins-today" type="button">Today</button>
+              <button id="ins-yesterday" type="button">Yesterday</button>
+              <button id="ins-week" type="button">Last 7 Days</button>
+              <button id="ins-custom" type="button" class="ins-cal">Custom Range</button>
+            </div>
+            <input id="ins-day" type="date" aria-label="Day" />
+          </div>
+          <div id="ins-body" class="ins-body" aria-live="polite"><div class="empty">Loading insights…</div></div>
         </div>
-        <span id="ins-range" class="ins-range muted"></span>
       </div>
-      <div id="ins-body" class="ins-body" aria-live="polite"><div class="empty">Loading insights…</div></div>
     </section>
 
     <div class="layout" id="jobs-view">

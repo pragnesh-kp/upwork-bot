@@ -137,6 +137,13 @@ function renderSchedule(s) {
     line('Next scan:', `${when(sc.nextDueAt)} (${until(sc.nextDueAt)})`, overdue && quiet ? 'warn' : '');
   }
   line('Every', `${sc.intervalMinutes} min, per filter`);
+  // Scan health (last 24 hours), once the Insights page has loaded it.
+  const h = window.insHealth;
+  if (h) {
+    const tone = h.rate >= 90 ? 'good' : h.rate >= 70 ? 'fair' : 'bad';
+    line('Scan health:', `${(Math.round(h.rate * 10) / 10).toFixed(1)}% ran`, `health ${tone}`);
+    box.lastChild.append(el('span', { class: 'health-sub' }, `${h.missed} missed / ${h.failed} failed (24 h)`));
+  }
   // The Jobs / Insights switch sits in this row, right after the status cards (same node, so its clicks keep working).
   box.append(VIEW_TABS);
   // The external scheduler should call every 30 minutes; warn when it has gone quiet.

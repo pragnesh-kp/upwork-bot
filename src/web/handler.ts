@@ -5,7 +5,7 @@ import type { Store } from '../db.ts';
 import { continueSearch, filterSchedules, getCycle, hasPendingWork, progressOf, requestSearch, step, tick, type EngineDeps } from '../engine.ts';
 import { defaultFilterName, filterProblems, MAX_FILTERS, parseUpworkSearchUrl, toFilterDefs } from '../filters.ts';
 import { log } from '../log.ts';
-import { buildInsights } from '../insights.ts';
+import { buildInsights, MAX_TREND_DAYS } from '../insights.ts';
 import { loadDiscovery } from '../mcp/discover.ts';
 import { finishUpworkSignInFromUrl, startUpworkSignIn } from '../mcp/web-auth.ts';
 
@@ -231,9 +231,20 @@ export function createHandler(deps: HandlerDeps): Handler {
         const day = url.searchParams.get('day');
         const tz = Number(url.searchParams.get('tz') ?? 0);
         const days = Number(url.searchParams.get('days') ?? 14);
-        if (day !== null && !/^\d{4}-\d{2}-\d{2}$/.test(day)) return send(res, 400, { error: 'day must be YYYY-MM-DD' });
+        const dayParam = (name: string) => url.searchParams.get(name) || null;
+        const [compareDay, trendFrom, trendTo] = [dayParam('compare'), dayParam('from'), dayParam('to')];
+        for (const d of [day || null, compareDay, trendFrom, trendTo]) {
+          if (d !== null && !/^\d{4}-\d{2}-\d{2}$/.test(d)) return send(res, 400, { error: 'Days must be YYYY-MM-DD' });
+        }
         if (!Number.isInteger(tz) || Math.abs(tz) > 14 * 60) return send(res, 400, { error: 'Invalid time zone' });
-        return send(res, 200, await buildInsights(engine, { day: day || null, tzOffsetMinutes: tz, days: Number.isInteger(days) ? Math.min(Math.max(days, 1), cfg.retentionDays) : 14 }));
+        return send(res, 200, await buildInsights(engine, {
+          day: day || null,
+          tzOffsetMinutes: tz,
+          days: Number.isInteger(days) ? Math.min(Math.max(days, 1), MAX_TREND_DAYS) : 14,
+          compareDay,
+          trendFrom,
+          trendTo,
+        }));
       }
       if (req.method === 'GET' && path === '/api/jobs') {
         const { defs } = await filterDefs();

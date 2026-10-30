@@ -40,7 +40,15 @@ export interface InsightsQuery {
   tzOffsetMinutes: number;
   /** How many days the daily job comparison covers (ending at the selected day). */
   days: number;
+  /** A second local day whose jobs are compared with the selected one. */
+  compareDay?: string | null;
+  /** A custom first / last local day for the daily job comparison (replaces `days`). */
+  trendFrom?: string | null;
+  trendTo?: string | null;
 }
+
+/** The longest daily job comparison (two months, for month vs month). */
+export const MAX_TREND_DAYS = 62;
 
 const iso = (ms: number) => new Date(ms).toISOString();
 
@@ -127,9 +135,16 @@ export async function buildInsights(d: EngineDeps, q: InsightsQuery) {
   const isPast = !!q.day && from + DAY_MS <= now;
 
   // --- jobs posted per day -----------------------------------------------------
-  const lastDay = q.day && q.day < today ? q.day : today;
-  const firstDayMs = localDayStart(lastDay, tz) - (q.days - 1) * DAY_MS;
-  const dayKeys = Array.from({ length: q.days }, (_, i) => localDay(firstDayMs + i * DAY_MS + DAY_MS / 2, tz));
+  let lastDay = q.day && q.day < today ? q.day : today;
+  let dayCount = q.days;
+  if (q.trendFrom && q.trendTo) {
+    // A custom range: never past today, at most MAX_TREND_DAYS long.
+    lastDay = q.trendTo < today ? q.trendTo : today;
+    const first = q.trendFrom < lastDay ? q.trendFrom : lastDay;
+    dayCount = Math.min(Math.round((localDayStart(lastDay, tz) - localDayStart(first, tz)) / DAY_MS) + 1, MAX_TREND_DAYS);
+  }
+  const firstDayMs = localDayStart(lastDay, tz) - (dayCount - 1) * DAY_MS;
+  const dayKeys = Array.from({ length: dayCount }, (_, i) => localDay(firstDayMs + i * DAY_MS + DAY_MS / 2, tz));
   const tally = (rows: { day: string; filter: string | null; count: number }[]) =>
     dayKeys.map((day) => {
       const byFilter = Object.fromEntries(filters.map((f) => [f, rows.find((r) => r.day === day && r.filter === f)?.count ?? 0]));
@@ -143,6 +158,22 @@ export async function buildInsights(d: EngineDeps, q: InsightsQuery) {
   });
   const last24h = toCounts(await store.jobsPostedBetween(filters, iso(now - DAY_MS), iso(now)));
   const inWindow = toCounts(await store.jobsPostedBetween(filters, iso(from), iso(to)));
+
+  // Jobs posted per hour: 24 hours from the window start (a day, or the last 24 hours).
+  const hourly = async (start: number) => {
+    const rows = await store.jobHourCounts(filters, iso(start), iso(start + DAY_MS));
+    return Array.from({ length: 24 }, (_, h) => ({
+      start: iso(start + h * 3_600_000),
+      total: rows.find((r) => r.hour === h && r.filter === null)?.count ?? 0,
+      byFilter: Object.fromEntries(filters.map((f) => [f, rows.find((r) => r.hour === h && r.filter === f)?.count ?? 0])),
+    }));
+  };
+  const hourCounts = await hourly(from);
+  let compare: { day: string; counts: ReturnType<typeof toCounts>; hours: typeof hourCounts } | null = null;
+  if (q.compareDay) {
+    const cFrom = localDayStart(q.compareDay, tz);
+    compare = { day: q.compareDay, counts: toCounts(await store.jobsPostedBetween(filters, iso(cFrom), iso(cFrom + DAY_MS))), hours: await hourly(cFrom) };
+  }
 
   // --- scan history --------------------------------------------------------------
   const anchorFrom = Math.min(from, now - DAY_MS) - ANCHOR_LOOKBACK_MS;
@@ -168,7 +199,7 @@ export async function buildInsights(d: EngineDeps, q: InsightsQuery) {
         status,
         newJobs: rows.reduce((n, r) => n + r.newJobs, 0),
         returned: rows.reduce((n, r) => n + r.returned, 0),
-        filters: rows.map((r) => ({ name: r.filter, outcome: r.outcome, newJobs: r.newJobs, returned: r.returned, pages: r.pages, moreNotFetched: r.moreNotFetched, error: r.error })),
+        filters: rows.map((r) => ({ name: r.filter, startedAt: r.startedAt, finishedAt: r.finishedAt, outcome: r.outcome, newJobs: r.newJobs, returned: r.returned, pages: r.pages, moreNotFetched: r.moreNotFetched, error: r.error })),
         gapMs: null as number | null,
       };
     })
@@ -203,7 +234,7 @@ export async function buildInsights(d: EngineDeps, q: InsightsQuery) {
     intervalMinutes: cfg.intervalMinutes,
     graceMinutes: cfg.scanGraceMinutes,
     retentionDays: cfg.retentionDays,
-    jobs: { last24h, inWindow, posted, found },
+    jobs: { last24h, inWindow, posted, found, hours: hourCounts, compare },
     scans: {
       runs: runList.reverse(),
       stats: {

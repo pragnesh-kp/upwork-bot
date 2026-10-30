@@ -588,6 +588,26 @@ export class Store {
     ];
   }
 
+  /**
+   * Jobs posted in [from, to), in whole hours counted from `from` (bucket 0 = the first hour):
+   * per filter, plus each hour's distinct total across these filters (filter null).
+   */
+  async jobHourCounts(filters: string[], from: string, to: string): Promise<{ hour: number; filter: string | null; count: number }[]> {
+    if (!filters.length) return [];
+    const col = 'COALESCE(posted_at, found_at)';
+    const marks = filters.map(() => '?').join(',');
+    const where = `${col} >= ? AND ${col} < ? AND filter_name IN (${marks})`;
+    // Whole milliseconds first, so a job at exactly hh:00 never lands in the hour before.
+    const bucket = `CAST(ROUND((julianday(${col}) - julianday(?)) * 86400000) AS INTEGER) / 3600000`;
+    const args = [from, from, to, ...filters];
+    const per = (await this.run(`SELECT ${bucket} AS h, filter_name AS filter, COUNT(*) AS n FROM job_posts WHERE ${where} GROUP BY h, filter_name`, args)).rows;
+    const all = (await this.run(`SELECT ${bucket} AS h, COUNT(DISTINCT source || ':' || job_id) AS n FROM job_posts WHERE ${where} GROUP BY h`, args)).rows;
+    return [
+      ...per.map((r) => ({ hour: Number(r.h), filter: String(r.filter), count: Number(r.n) })),
+      ...all.map((r) => ({ hour: Number(r.h), filter: null, count: Number(r.n) })),
+    ];
+  }
+
   /** Jobs posted in [from, to): per filter, plus the distinct total (filter null). */
   async jobsPostedBetween(filters: string[], from: string, to: string): Promise<{ filter: string | null; count: number }[]> {
     if (!filters.length) return [{ filter: null, count: 0 }];

@@ -104,5 +104,35 @@ test('insights: scans and daily job counts are recorded and survive deleting a j
   assert.deepEqual(ins.scans.runs[0]!.filters.map((f) => f.name).sort(), ['A', 'B']);
   assert.equal(ins.timetable.counts.completed, 2);
   assert.equal(ins.timetable.counts.pending, 2);
+
+  // Hourly counts over the last 24 hours: both jobs were posted 2 hours ago, so in hour 21 or 22.
+  assert.equal(ins.jobs.hours.length, 24);
+  assert.equal(ins.jobs.hours.reduce((n, h) => n + h.total, 0), 2);
+  assert.equal(ins.jobs.hours.slice(21, 23).reduce((n, h) => n + h.byFilter.A!, 0), 2);
+  assert.equal(ins.jobs.compare, null);
+
+  // A custom day range and a compare day.
+  const today = localDay(Date.now(), 330);
+  const weekAgo = localDay(Date.now() - 7 * 86_400_000, 330);
+  const custom = await buildInsights(deps, { day: today, tzOffsetMinutes: 330, days: 7, compareDay: weekAgo, trendFrom: weekAgo, trendTo: today });
+  assert.equal(custom.jobs.posted.length, 8);
+  assert.equal(custom.jobs.posted[0]!.day, weekAgo);
+  assert.equal(custom.jobs.compare!.day, weekAgo);
+  assert.equal(custom.jobs.compare!.counts.total, 0);
+  assert.equal(custom.jobs.compare!.hours.length, 24);
+  store.close();
+});
+
+test('hourly job counts put a job at exactly hh:00 in that hour', async () => {
+  const store = Store.open(':memory:');
+  await store.addFilter({ name: 'A', url: 'https://www.upwork.com/nx/search/jobs?q=node', enabled: true });
+  const raw = store as unknown as { run: (sql: string, args: string[]) => Promise<unknown> };
+  const at = (iso: string, id: string) =>
+    raw.run('INSERT INTO job_posts (source, job_id, filter_name, posted_at, found_at) VALUES (?, ?, ?, ?, ?)', ['s', id, 'A', iso, iso]);
+  await at('2026-10-30T03:00:00.000Z', '1');
+  await at('2026-10-30T03:59:59.999Z', '2');
+  await at('2026-10-30T04:00:00.000Z', '3');
+  const rows = await store.jobHourCounts(['A'], '2026-10-30T00:00:00.000Z', '2026-10-31T00:00:00.000Z');
+  assert.deepEqual(rows.filter((r) => r.filter === null).map((r) => [r.hour, r.count]).sort(), [[3, 2], [4, 1]]);
   store.close();
 });
