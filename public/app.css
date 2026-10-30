@@ -846,3 +846,108 @@ button, a, summary { -webkit-tap-highlight-color: transparent; touch-action: man
   .topbar { flex-direction: row; align-items: center; position: static; }
   .sidebar { position: static; max-height: none; }
 }
+
+/* --- Motion and hover effects ------------------------------------------------------ */
+/* Entrance animations only play on elements marked by the scripts (first paint, a new view,
+   newly found jobs), never on the quiet background refreshes. "backwards" fill keeps hover
+   transforms working once an entrance has finished. Reduced-motion users get none (see above). */
+@keyframes rise { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
+@keyframes rise-sm { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@keyframes grow-y { from { transform: scaleY(0); } to { transform: scaleY(1); } }
+@keyframes leave { to { opacity: 0; transform: translateX(24px) scale(0.98); } }
+@keyframes flow { 0%, 100% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } }
+@keyframes drop-in { from { opacity: 0; transform: translateY(-6px); clip-path: inset(0 0 100% 0); } to { opacity: 1; transform: none; clip-path: inset(0); } }
+:root { --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1); --ease-spring: cubic-bezier(0.3, 1.4, 0.5, 1); }
+
+/* Brand: the gradient word drifts slowly. */
+.grad-text { background-size: 200% 200%; animation: flow 8s ease-in-out infinite; }
+
+/* Views fade in when switched (the browser replays this when [hidden] is lifted). */
+.insights:not([hidden]), #jobs-view:not([hidden]) { animation: rise-sm 0.35s var(--ease-out) backwards; }
+
+/* Status row, first paint only. */
+.notice.enter > * { animation: rise 0.45s var(--ease-out) backwards; }
+.notice.enter > :nth-child(2) { animation-delay: 50ms; }
+.notice.enter > :nth-child(3) { animation-delay: 100ms; }
+.notice.enter > :nth-child(4) { animation-delay: 150ms; }
+.notice.enter > :nth-child(5) { animation-delay: 200ms; }
+.notice.enter > :nth-child(n + 6) { animation-delay: 250ms; }
+
+/* Job cards: new ones rise in, staggered; deleted ones slide away. */
+.job.enter { animation: rise 0.45s var(--ease-out) backwards; animation-delay: calc(var(--i, 0) * 45ms); }
+.job.leaving { animation: leave 0.25s ease-in forwards; pointer-events: none; }
+
+/* Insights: cards, tiles, chart bars and table rows. */
+.ins-body[data-anim="full"] .ins-card,
+.ins-body[data-anim="full"] .kpi,
+.ins-body[data-anim="full"] .mx,
+.ins-body[data-anim="full"] .cause,
+.ins-body[data-anim="full"] .ins-panel { animation: rise 0.5s var(--ease-out) backwards; animation-delay: calc(var(--i, 0) * 60ms); }
+.ins-body[data-anim="full"] .hbar,
+.ins-body[data-anim="full"] .dbar { transform-origin: bottom; animation: grow-y 0.6s var(--ease-out) backwards; animation-delay: calc(150ms + var(--i, 0) * 22ms); }
+.ins-body[data-anim="full"] .sched-table tbody tr:not(.detail-row),
+.ins-body[data-anim="rows"] .sched-table tbody tr:not(.detail-row) { animation: rise-sm 0.35s var(--ease-out) backwards; animation-delay: calc(var(--i, 0) * 25ms); }
+.ins-filters.enter li { animation: rise 0.45s var(--ease-out) backwards; animation-delay: calc(var(--i, 0) * 50ms); }
+.detail-row.opening .inspect-box { animation: drop-in 0.28s var(--ease-out) backwards; }
+
+/* Smooth state changes everywhere. */
+.sched-item, .sidebar li, .ins-filters li, .kpi, .mx, .cause, .ins-card, .ins-panel, .chip, .pill-btn, .new-pill,
+.ins-table tbody tr td, .dbar, .hbar, .logo, .ins-range-pills button, .st, .meta > span, .sla, .ins-date, .ins-check, .ins-select {
+  transition: transform 0.25s var(--ease-out), box-shadow 0.25s ease, border-color 0.25s ease, background-color 0.2s ease, color 0.2s ease, filter 0.2s ease;
+}
+.ins-table tbody tr td { transition-property: background-color; }
+.dbar, .hbar { transition: height 0.4s var(--ease-out), filter 0.2s ease, background-color 0.2s ease, transform 0.25s var(--ease-out); }
+
+/* Primary buttons: the gradient slides on hover. */
+button.primary, .job-actions .open, .ins-range-pills button.on { background-size: 180% 180%; background-position: 0% 50%; transition: background-position 0.5s var(--ease-out), filter 0.2s, transform 0.15s, box-shadow 0.25s; }
+
+@media (hover: hover) {
+  button.primary:hover, .job-actions .open:hover, .ins-range-pills button.on:hover { background-position: 100% 50%; transform: translateY(-1px); }
+  button.primary:active, .job-actions .open:active { transform: scale(0.97); }
+  button.soft:hover, #logout:hover, .day-buttons button:hover, .job-actions button:hover, .ins-alert .review:hover { transform: translateY(-1px); }
+  .ins-range-pills button:not(.on):hover { background: var(--accent-soft); color: var(--accent); }
+  .segmented button:not(.active):hover { background: color-mix(in srgb, var(--accent-soft) 60%, transparent); color: var(--accent); }
+
+  /* Header. */
+  .logo:hover { transform: rotate(-8deg) scale(1.06); box-shadow: var(--glow); }
+  .notice .sched-item:hover { transform: translateY(-2px); box-shadow: var(--shadow); border-color: color-mix(in srgb, var(--accent) 30%, var(--border)); }
+  .notice .sched-item.warn:hover, .notice .sched-item.busy:hover { transform: none; }
+
+  /* Job cards: a gradient line runs across the top; the Upwork arrow nudges. */
+  .job::before {
+    content: ""; position: absolute; left: 18px; right: 18px; top: -1px; height: 2px; border-radius: 2px;
+    background: var(--grad); transform: scaleX(0); transform-origin: left; transition: transform 0.35s var(--ease-out);
+  }
+  .job:hover::before { transform: scaleX(1); }
+  .job-actions .open::after { transition: transform 0.2s var(--ease-out); }
+  .job-actions .open:hover::after { transform: translate(2px, -2px); }
+  .job .chip:hover { border-color: color-mix(in srgb, var(--accent) 40%, var(--border)); color: var(--accent); }
+  .job .meta > span:hover { border-color: var(--border-strong); }
+
+  /* Filter lists. */
+  .sidebar li:not(.active):hover { transform: translateX(3px); }
+  .ins-filters li:not(.active):hover { transform: translateY(-2px); box-shadow: var(--shadow); border-color: color-mix(in srgb, var(--accent) 35%, var(--border)); }
+  .ins-filters li.active:hover { filter: brightness(1.05); }
+
+  /* Insights tiles and cards. */
+  .kpi:hover, .mx:hover { transform: translateY(-3px); box-shadow: var(--shadow); border-color: color-mix(in srgb, var(--accent) 30%, var(--border)); }
+  .mx.alert:hover { border-color: var(--c); }
+  .cause:hover { transform: translateY(-2px); box-shadow: var(--shadow); }
+  .ins-card:hover { box-shadow: 0 18px 40px -16px rgba(15, 23, 42, 0.25), 0 2px 6px rgba(15, 23, 42, 0.05); }
+  .ins-panel:hover { border-color: var(--border-strong); }
+  .ins-date:hover, .ins-check:hover, .ins-select:hover { border-color: var(--border-strong); }
+  .sla:hover { transform: scale(1.04); }
+
+  /* Chart bars brighten; the hovered day column lifts its bar. */
+  .hbar-col:hover .hbar:not(.cmp) { filter: brightness(1.12); transform: scaleY(1.03); transform-origin: bottom; }
+  .dbar-col:hover .dbar:not(.cmp) { filter: brightness(1.1) saturate(1.1); }
+  .dbar-col:hover .dbar-val { transform: translateY(-2px); }
+  .dbar-val { display: inline-block; transition: transform 0.2s var(--ease-out); }
+
+  /* Schedule table rows. */
+  .sched-table tbody tr:not(.detail-row):hover td { background: color-mix(in srgb, var(--accent-soft) 55%, transparent); }
+  .sched-table tbody tr:hover .st { transform: scale(1.05); }
+  .ins-table button.inspect:hover { color: var(--accent); }
+  .pill-btn:not(.on):hover { background: var(--panel); }
+  .new-pill:hover { transform: scale(1.06); }
+}

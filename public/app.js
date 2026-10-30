@@ -116,9 +116,16 @@ const SCHEDULER_QUIET_MS = 60 * 60000;
 
 const VIEW_TABS = document.querySelector('.view-tabs');
 
+let scheduleShown = false;
 function renderSchedule(s) {
   const box = $('schedule');
   box.replaceChildren();
+  // The status cards rise in on the first paint only, not on every 30-second refresh.
+  if (!scheduleShown) {
+    scheduleShown = true;
+    box.classList.add('enter');
+    setTimeout(() => box.classList.remove('enter'), 1200);
+  }
   const line = (label, value, cls) => {
     const p = el('span', { class: `sched-item${cls ? ` ${cls}` : ''}` });
     p.append(el('span', { class: 'muted' }, `${label} `), el('strong', {}, value));
@@ -336,8 +343,18 @@ function withDayHeaders(jobs, cards) {
   return out;
 }
 
+/** Jobs on screen after the last render, so only newly shown cards animate in. */
+let shownKeys = null;
+let shownView = '';
+const reduceMotion = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
 function renderJobs(jobs) {
   const shown = jobs;
+  const viewKey = JSON.stringify([view.filter, view.state, view.q, view.day]);
+  const before = viewKey === shownView ? shownKeys : null;
+  shownView = viewKey;
+  shownKeys = new Set(shown.map((j) => `${j.source}:${j.jobId}`));
+  let entering = 0;
   const stateLabel = { new: 'New jobs', saved: 'Saved jobs', reviewed: 'Reviewed jobs', '': 'All jobs' }[view.state];
   const extra = [view.filter, view.day ? `posted ${dayLabel(`${view.day}T12:00:00`)}` : null, view.q ? `"${view.q}"` : null].filter(Boolean);
   $('list-title').textContent = `${stateLabel}${extra.map((x) => ` · ${x}`).join('')} (${shown.length})`;
@@ -349,6 +366,14 @@ function renderJobs(jobs) {
   const tpl = $('job-tpl');
   const cards = shown.map((j) => {
     const n = tpl.content.firstElementChild.cloneNode(true);
+    // A new view animates its first cards in; a refresh animates only jobs that just arrived.
+    if (!before || !before.has(`${j.source}:${j.jobId}`)) {
+      if (entering < 12) {
+        n.classList.add('enter');
+        n.style.setProperty('--i', String(entering));
+      }
+      entering++;
+    }
     const url = j.url ? safeUpworkUrl(j.url) : null;
     const a = n.querySelector('.title');
     a.textContent = j.title;
@@ -407,6 +432,11 @@ function renderJobs(jobs) {
         b.disabled = true;
         try {
           await api('/api/jobs', act === 'delete' ? { source: j.source, jobId: j.jobId, delete: true } : { source: j.source, jobId: j.jobId, state: act });
+          // Deleted (or reviewed off the "All" list): the card slides away before the list refreshes.
+          if ((act === 'delete' || (act === 'reviewed' && !view.state)) && !reduceMotion()) {
+            n.classList.add('leaving');
+            await new Promise((ok) => setTimeout(ok, 240));
+          }
           await refresh();
         } catch (err) {
           if (!(err instanceof LoginRequired)) showError(err.message);
@@ -482,10 +512,11 @@ $('run').addEventListener('click', async () => {
   await refresh().catch(() => {});
 });
 
-for (const b of document.querySelectorAll('.segmented button')) {
+// Only the review-state tabs (All / New / Saved / Reviewed), not the Jobs / Insights switch.
+for (const b of document.querySelectorAll('.segmented button[data-state]')) {
   b.addEventListener('click', () => {
     view.state = b.dataset.state;
-    for (const x of document.querySelectorAll('.segmented button')) x.classList.toggle('active', x === b);
+    for (const x of document.querySelectorAll('.segmented button[data-state]')) x.classList.toggle('active', x === b);
     loadJobs();
   });
 }

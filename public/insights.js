@@ -89,7 +89,9 @@
   }
   function kpi(label, value, sub, cls = '') {
     const t = el('div', { class: `kpi ${cls}` });
-    t.append(el('span', { class: 'kpi-label' }, label), el('strong', { class: 'kpi-value' }, String(value)));
+    const v = el('strong', { class: 'kpi-value' }, String(value));
+    if (Number.isInteger(value)) v.dataset.count = String(value);
+    t.append(el('span', { class: 'kpi-label' }, label), v);
     if (sub) t.append(sub instanceof Node ? sub : el('span', { class: 'kpi-sub' }, sub));
     return t;
   }
@@ -165,7 +167,7 @@
     const review = el('button', { type: 'button', class: 'review' }, `Review ${n} ${l.missed ? 'missed' : 'failed'} scan${n === 1 ? '' : 's'}`);
     review.addEventListener('click', () => {
       ins.pill = l.missed ? 'missed' : 'failed';
-      render(ins.data);
+      render(ins.data, 'rows');
       document.getElementById('ins-history')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     });
     const close = el('button', { type: 'button', class: 'close', 'aria-label': 'Hide this notice' });
@@ -481,7 +483,9 @@
       const t = el('div', { class: `mx st-${st}${value && ['missed', 'failed', 'delayed'].includes(st) ? ' alert' : ''}` });
       const top = el('div', { class: 'mx-top' });
       top.append(el('span', { class: 'kpi-label' }, label), el('span', { class: `mx-dot${icon ? ' icon' : ''}`, 'aria-hidden': 'true' }));
-      t.append(top, el('strong', { class: 'kpi-value' }, String(value)), el('span', { class: 'kpi-sub' }, sub));
+      const v = el('strong', { class: 'kpi-value' }, String(value));
+      if (Number.isInteger(value)) v.dataset.count = String(value);
+      t.append(top, v, el('span', { class: 'kpi-sub' }, sub));
       return t;
     };
     tiles.append(
@@ -543,7 +547,7 @@
       const b = el('button', { type: 'button', class: `pill-btn p-${k}${ins.pill === k ? ' on' : ''}`, 'aria-pressed': String(ins.pill === k) }, label);
       b.addEventListener('click', () => {
         ins.pill = k;
-        render(ins.data);
+        render(ins.data, 'rows');
       });
       pills.append(b);
     }
@@ -589,7 +593,10 @@
       const inspect = el('button', { type: 'button', class: 'link inspect', 'aria-expanded': String(ins.inspect.has(r.key)) }, ins.inspect.has(r.key) ? 'Close' : 'Inspect');
       inspect.addEventListener('click', () => {
         if (ins.inspect.has(r.key)) ins.inspect.delete(r.key);
-        else ins.inspect.add(r.key);
+        else {
+          ins.inspect.add(r.key);
+          ins.justOpened = r.key;
+        }
         render(ins.data);
       });
       row.append(cell(inspect));
@@ -631,7 +638,7 @@
   }
 
   function detailRow(r) {
-    const tr = el('tr', { class: 'detail-row' });
+    const tr = el('tr', { class: `detail-row${r.key === ins.justOpened ? ' opening' : ''}` });
     const td = el('td', { colspan: '8' });
     const box = el('div', { class: 'inspect-box' });
     const facts = el('p');
@@ -688,21 +695,69 @@
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
+  // --- Motion -------------------------------------------------------------------------------
+  const reduced = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  /** Numbers each item in a group, for staggered entrance delays (capped so long lists stay quick). */
+  function stagger(nodes, cap = 14) {
+    [...nodes].forEach((n, i) => n.style.setProperty('--i', String(Math.min(i, cap))));
+  }
+  /** Whole-number tiles count up from zero. */
+  function countUp(root) {
+    if (reduced() || document.hidden) return;
+    for (const n of root.querySelectorAll('[data-count]')) {
+      const to = Number(n.dataset.count);
+      if (!to) continue;
+      const start = performance.now();
+      let done = false;
+      const step = (t) => {
+        if (done) return;
+        const p = Math.min((t - start) / 700, 1);
+        n.textContent = String(Math.round(to * (1 - (1 - p) ** 3)));
+        if (p < 1) requestAnimationFrame(step);
+      };
+      n.textContent = '0';
+      requestAnimationFrame(step);
+      // Frames pause in background tabs: always land on the real number.
+      setTimeout(() => {
+        done = true;
+        n.textContent = String(to);
+      }, 760);
+    }
+  }
+
   // --- Page ---------------------------------------------------------------------------------
-  function render(d) {
+  /**
+   * anim: "full" when the view changes (cards, tiles and bars animate in), "rows" when only
+   * the schedule table changes, "none" for the quiet background refresh.
+   */
+  function render(d, anim = 'none') {
     if (!d) return;
     syncToolbar();
     renderSide(d);
+    const side = $('ins-filters');
+    side.classList.toggle('enter', anim === 'full');
+    stagger(side.children);
     renderAlert(d);
+    const body = $('ins-body');
+    body.dataset.anim = anim;
     if (!d.filters.length) {
-      $('ins-body').replaceChildren(el('div', { class: 'empty' }, 'Add a filter to start collecting insights.'));
+      body.replaceChildren(el('div', { class: 'empty' }, 'Add a filter to start collecting insights.'));
       return;
     }
     const rows = slotRows(d);
-    $('ins-body').replaceChildren(postingsCard(d), reliabilityCard(d, rows), historyCard(d, rows));
+    body.replaceChildren(postingsCard(d), reliabilityCard(d, rows), historyCard(d, rows));
+    stagger(body.children);
+    for (const group of body.querySelectorAll('.kpis, .matrix, .diag-grid, .hbars, .dbars')) stagger(group.children, 30);
+    for (const panel of body.querySelectorAll('.ins-panel')) panel.style.setProperty('--i', '2');
+    stagger(body.querySelectorAll('.sched-table tbody tr:not(.detail-row)'), 20);
+    for (const chart of body.querySelectorAll('.hbars, .dbars')) {
+      [...chart.children].forEach((col, i) => col.querySelectorAll('.hbar, .dbar').forEach((b) => b.style.setProperty('--i', String(i))));
+    }
+    if (anim === 'full') countUp(body);
+    ins.justOpened = '';
   }
 
-  async function load() {
+  async function load(anim = 'full') {
     const seq = ++ins.seq;
     if (!ins.day) ins.day = today();
     const p = new URLSearchParams({ tz: String(tz()), day: ins.day, compare: ins.compareOn && ins.compareDay ? ins.compareDay : addDays(ins.day, -1) });
@@ -721,7 +776,7 @@
       // A remembered filter that was removed meanwhile falls back to "All filters".
       if (ins.filter && !d.filters.includes(ins.filter)) ins.filter = '';
       ins.data = d;
-      render(d);
+      render(d, anim);
       publishHealth(d);
     } catch (err) {
       if (!(err instanceof LoginRequired)) $('ins-body').replaceChildren(el('div', { class: 'empty' }, `Could not load insights: ${err.message}`));
@@ -737,7 +792,7 @@
   function setFilter(name) {
     ins.filter = name;
     save();
-    render(ins.data);
+    render(ins.data, 'full');
   }
   function setTrend(k) {
     ins.trend = k;
@@ -762,7 +817,7 @@
     clearInterval(ins.timer);
     if (insights) {
       load();
-      ins.timer = setInterval(load, 60000);
+      ins.timer = setInterval(() => load('none'), 60000);
     }
   }
 
