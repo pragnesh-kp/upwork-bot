@@ -394,8 +394,11 @@ button.link.danger { color: var(--red); }
 .modal[data-tone="danger"] #modal-ok { background: var(--grad-danger); box-shadow: 0 8px 22px -8px rgba(225, 29, 72, 0.7); }
 
 /* --- Jobs / Insights switch ------------------------------------------------------ */
-.view-tabs { margin: 18px var(--side) 0; }
-.view-tabs .segmented button { height: 36px; padding: 0 22px; font-size: 14px; }
+/* Sits in the status row (#schedule), right after the "Every" card. */
+.view-tabs { margin: 18px var(--side) 0; display: flex; align-items: stretch; }
+.notice .view-tabs { margin: 0; }
+.view-tabs .segmented { display: flex; width: 100%; align-items: center; background: var(--panel); box-shadow: var(--shadow-sm); border-radius: 14px; }
+.view-tabs .segmented button { flex: 1 1 0; height: 100%; min-height: 40px; padding: 0 18px; font-size: 14px; }
 
 /* --- Insights -------------------------------------------------------------------- */
 .insights { padding: 16px var(--side) 56px; }
@@ -520,7 +523,7 @@ button.link.danger { color: var(--red); }
 
 @media (max-width: 820px) {
   .view-tabs { margin: 14px max(var(--gutter), env(safe-area-inset-left)) 0; }
-  .view-tabs .segmented { display: flex; width: 100%; }
+  .notice .view-tabs { margin: 0; grid-column: 1 / -1; }
   .insights { padding: 12px max(var(--gutter), env(safe-area-inset-right)) calc(100px + env(safe-area-inset-bottom)) max(var(--gutter), env(safe-area-inset-left)); }
   .ins-card { padding: 16px 14px; border-radius: 18px; }
   .tl-row { grid-template-columns: 1fr; gap: 4px; }
