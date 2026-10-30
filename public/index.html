@@ -57,7 +57,30 @@
       <p id="connect-msg" class="add-msg err" hidden></p>
     </section>
 
-    <div class="layout">
+    <nav class="view-tabs" aria-label="Page">
+      <div class="segmented" role="tablist">
+        <button id="tab-jobs" type="button" role="tab" data-view="jobs" class="active" aria-selected="true">Jobs</button>
+        <button id="tab-insights" type="button" role="tab" data-view="insights" aria-selected="false">Insights</button>
+      </div>
+    </nav>
+
+    <section id="insights" class="insights" hidden aria-label="Insights">
+      <div class="toolbar ins-toolbar">
+        <div class="datepick">
+          <label for="ins-day">Day</label>
+          <input id="ins-day" type="date" />
+          <div class="day-buttons">
+            <button id="ins-24h" type="button" class="on">Last 24 hours</button>
+            <button id="ins-today" type="button">Today</button>
+            <button id="ins-yesterday" type="button">Yesterday</button>
+          </div>
+        </div>
+        <span id="ins-range" class="ins-range muted"></span>
+      </div>
+      <div id="ins-body" class="ins-body" aria-live="polite"><div class="empty">Loading insights…</div></div>
+    </section>
+
+    <div class="layout" id="jobs-view">
       <nav id="sidebar" class="sidebar" aria-label="Filters">
         <h2 class="sidebar-title">Filters</h2>
         <!-- Phones: the filter list folds behind this button, so the jobs stay near the top. -->
@@ -142,5 +165,6 @@
     </dialog>
 
     <script src="/app.js"></script>
+    <script src="/insights.js"></script>
   </body>
 </html>

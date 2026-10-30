@@ -5,6 +5,7 @@ import type { Store } from '../db.ts';
 import { continueSearch, filterSchedules, getCycle, hasPendingWork, progressOf, requestSearch, step, tick, type EngineDeps } from '../engine.ts';
 import { defaultFilterName, filterProblems, MAX_FILTERS, parseUpworkSearchUrl, toFilterDefs } from '../filters.ts';
 import { log } from '../log.ts';
+import { buildInsights } from '../insights.ts';
 import { loadDiscovery } from '../mcp/discover.ts';
 import { finishUpworkSignInFromUrl, startUpworkSignIn } from '../mcp/web-auth.ts';
 
@@ -226,6 +227,14 @@ export function createHandler(deps: HandlerDeps): Handler {
 
       // --- dashboard API ----------------------------------------------------------
       if (req.method === 'GET' && path === '/api/state') return send(res, 200, await state());
+      if (req.method === 'GET' && path === '/api/insights') {
+        const day = url.searchParams.get('day');
+        const tz = Number(url.searchParams.get('tz') ?? 0);
+        const days = Number(url.searchParams.get('days') ?? 14);
+        if (day !== null && !/^\d{4}-\d{2}-\d{2}$/.test(day)) return send(res, 400, { error: 'day must be YYYY-MM-DD' });
+        if (!Number.isInteger(tz) || Math.abs(tz) > 14 * 60) return send(res, 400, { error: 'Invalid time zone' });
+        return send(res, 200, await buildInsights(engine, { day: day || null, tzOffsetMinutes: tz, days: Number.isInteger(days) ? Math.min(Math.max(days, 1), cfg.retentionDays) : 14 }));
+      }
       if (req.method === 'GET' && path === '/api/jobs') {
         const { defs } = await filterDefs();
         const enabled = defs.filter((f) => f.enabled).map((f) => f.name);
@@ -254,7 +263,7 @@ export function createHandler(deps: HandlerDeps): Handler {
         }
         if (path === '/api/search') {
           const filter = typeof body.filter === 'string' && body.filter ? body.filter : null;
-          await requestSearch(store, filter);
+          await requestSearch(store, filter, 'manual');
           return send(res, 200, await step(engine, interactiveMs));
         }
         if (path === '/api/upwork/connect') {
@@ -262,7 +271,7 @@ export function createHandler(deps: HandlerDeps): Handler {
             const r = await startUpworkSignIn(cfg, store);
             if ('url' in r) return send(res, 200, { url: r.url });
             // The stored sign-in still works: nothing to sign in to; search with it.
-            await requestSearch(store, null);
+            await requestSearch(store, null, 'connect');
             return send(res, 200, { connected: `${r.connected.account.name} (${r.connected.account.roleLabel})` });
           } catch (err) {
             log.error('Upwork sign-in could not start', { error: (err as Error).message });
@@ -274,7 +283,7 @@ export function createHandler(deps: HandlerDeps): Handler {
           try {
             const d = await finishUpworkSignInFromUrl(cfg, store, typeof body.url === 'string' ? body.url : '');
             log.info('Upwork connected from the dashboard', { account: d.account.name });
-            await requestSearch(store, null);
+            await requestSearch(store, null, 'connect');
             return send(res, 200, { connected: `${d.account.name} (${d.account.roleLabel})` });
           } catch (err) {
             log.error('Upwork sign-in failed', { error: (err as Error).message });
@@ -283,7 +292,7 @@ export function createHandler(deps: HandlerDeps): Handler {
         }
         // While the dashboard is open it also starts searches that are due, so they run on time
         // even when the external scheduler is not calling.
-        if (path === '/api/step') return send(res, 200, await tick(engine, interactiveMs));
+        if (path === '/api/step') return send(res, 200, await tick(engine, interactiveMs, 'dashboard'));
         // POST /api/filters with action "add" or "remove".
         if (path === '/api/filters' && body.action === 'add') {
           const rawUrl = typeof body.url === 'string' ? body.url.trim() : '';
@@ -304,7 +313,7 @@ export function createHandler(deps: HandlerDeps): Handler {
           }
           log.info('filter added from dashboard', { filter: name });
           // Its first search starts now; the page keeps calling /api/step until it finishes.
-          await requestSearch(store, name);
+          await requestSearch(store, name, 'new-filter');
           return send(res, 200, { ok: true, name });
         }
         if (path === '/api/filters' && body.action === 'remove') {

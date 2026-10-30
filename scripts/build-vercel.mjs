@@ -5,7 +5,7 @@ import { cpSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const OUT = '.vercel/output';
-const ROUTES = ['api/login', 'api/logout', 'api/state', 'api/jobs', 'api/search', 'api/step', 'api/filters', 'api/cron', 'api/upwork/connect', 'api/upwork/finish'];
+const ROUTES = ['api/login', 'api/logout', 'api/state', 'api/jobs', 'api/search', 'api/step', 'api/filters', 'api/cron', 'api/upwork/connect', 'api/upwork/finish', 'api/insights'];
 // Vercel Hobby deploys at most 12 functions; a 13th makes the whole deployment fail.
 if (ROUTES.length > 12) throw new Error(`${ROUTES.length} API routes: Vercel Hobby allows 12 functions per deployment. Merge routes.`);
 // These run search work: give them Vercel Hobby's maximum (300 s); the engine stops itself earlier.

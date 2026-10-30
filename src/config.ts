@@ -21,6 +21,8 @@ export interface Config {
   search: { maxPagesPerFilter: number; firstRunMaxPages: number; pageSize: number; delayBetweenSearchesMs: number };
   /** Minutes between automatic searches; the scheduler calls /api/cron more often than this. */
   intervalMinutes: number;
+  /** Insights: a scan starting this many minutes after its due time counts as delayed. */
+  scanGraceMinutes: number;
   /**
    * Search work per scheduler or dashboard call (seconds); the rest continues on the next call.
    * Default 20: cron-job.org's free plan cuts a call off after 30 s.
@@ -127,6 +129,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       delayBetweenSearchesMs: int(env, 'DELAY_BETWEEN_SEARCHES_MS', 3000, 0, 60_000),
     },
     intervalMinutes: int(env, 'SEARCH_INTERVAL_MINUTES', 30, 10, 1440),
+    scanGraceMinutes: int(env, 'SCAN_GRACE_MINUTES', 10, 1, 720),
     stepBudgetSeconds: int(env, 'STEP_BUDGET_SECONDS', 20, 5, 280),
     dev: { port: int(env, 'DASHBOARD_PORT', 5174, 1024, 65535), dataDir },
     // Upwork's API & MCP Terms (s. 8.6): MCP outputs may be kept no longer than 30 days.

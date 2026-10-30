@@ -185,6 +185,32 @@ test('first search pages deeper; later searches stop after 2 pages with nothing 
   assert.equal(r2?.newJobs, 1);
 });
 
+test('after a long gap between scans, a search reads as deep as a first search so no new posts are skipped', async () => {
+  const { src, clock, add, search } = setup({ MAX_PAGES_PER_FILTER: '2', FIRST_RUN_MAX_PAGES: '6' });
+  await add('React', 'react');
+  src.market = [job('old1', 'React developer o1'), job('old2', 'React developer o2')];
+  await search();
+
+  // 8 new posts arrive soon after: a normal search stops at 2 pages (4 jobs) and says more were left.
+  src.market.unshift(...Array.from({ length: 8 }, (_, i) => job(`a${i}`, `React developer a${i}`)));
+  src.calls = 0;
+  const normal = await search();
+  assert.equal(src.calls, 2);
+  assert.equal(normal?.newJobs, 4);
+  assert.equal(normal?.filters[0]?.moreResultsNotFetched, true);
+
+  // 8 more arrive while the scheduler is silent for 3 hours: the catch-up search pages on until a known page.
+  clock.t += 3 * 3_600_000;
+  src.market.unshift(...Array.from({ length: 8 }, (_, i) => job(`b${i}`, `React developer b${i}`)));
+  src.calls = 0;
+  const caught = await search();
+  assert.equal(caught?.filters[0]?.catchUp, true);
+  // All 8 (a normal search would stop at 4); paging ends at the first page it already knows.
+  assert.equal(src.calls, 5);
+  assert.equal(caught?.newJobs, 8);
+  assert.equal(caught?.filters[0]?.moreResultsNotFetched, false);
+});
+
 test('a category filter searches every category and subcategory and merges the results', async () => {
   const { store, src, search } = setup();
   await store.addFilter({ name: 'Cats', url: 'https://www.upwork.com/nx/search/jobs?category2_uid=111111,222222&subcategory2_uid=333333&t=1', enabled: true });
