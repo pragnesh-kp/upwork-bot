@@ -51,6 +51,41 @@ export interface FilterLastSearch {
   error: string | null;
 }
 
+/** One filter's part of one search, kept for the Insights page (scan history). */
+export interface ScanRow {
+  id: number;
+  runId: number;
+  filter: string;
+  trigger: string;
+  startedAt: string;
+  finishedAt: string | null;
+  /** running | ok | failed */
+  status: string;
+  pages: number;
+  returned: number;
+  accepted: number;
+  newJobs: number;
+  moreNotFetched: boolean;
+  error: string | null;
+}
+
+export interface ScanResult {
+  status: 'ok' | 'failed';
+  pages: number;
+  returned: number;
+  accepted: number;
+  newJobs: number;
+  moreNotFetched: boolean;
+  error: string | null;
+}
+
+/** Jobs counted per local day (YYYY-MM-DD) and filter. */
+export interface DayCount {
+  day: string;
+  filter: string | null;
+  count: number;
+}
+
 export interface RunRow {
   id: number;
   source: string;
@@ -136,12 +171,45 @@ CREATE TABLE IF NOT EXISTS kv (
   value TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+-- Scan history: one row per filter per search (no Upwork content), for the Insights page.
+CREATE TABLE IF NOT EXISTS scan_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id INTEGER NOT NULL,
+  filter_name TEXT NOT NULL,
+  trigger TEXT NOT NULL,
+  started_at TEXT NOT NULL,
+  finished_at TEXT,
+  status TEXT NOT NULL,
+  pages INTEGER NOT NULL DEFAULT 0,
+  returned INTEGER NOT NULL DEFAULT 0,
+  accepted INTEGER NOT NULL DEFAULT 0,
+  new_jobs INTEGER NOT NULL DEFAULT 0,
+  more_not_fetched INTEGER NOT NULL DEFAULT 0,
+  error TEXT
+);
+CREATE INDEX IF NOT EXISTS scan_log_started ON scan_log (started_at);
+CREATE INDEX IF NOT EXISTS scan_log_run ON scan_log (run_id, filter_name);
+-- Every job each filter found, with its posting time, for daily counts. Separate from job_details,
+-- so deleting a job or the 3-day age limit never changes past counts. Kept RETENTION_DAYS (<= 30).
+CREATE TABLE IF NOT EXISTS job_posts (
+  source TEXT NOT NULL,
+  job_id TEXT NOT NULL,
+  filter_name TEXT NOT NULL,
+  posted_at TEXT,
+  found_at TEXT NOT NULL,
+  PRIMARY KEY (source, job_id, filter_name)
+);
+CREATE INDEX IF NOT EXISTS job_posts_posted ON job_posts (posted_at);
+CREATE INDEX IF NOT EXISTS job_posts_found ON job_posts (found_at);
 CREATE TABLE IF NOT EXISTS login_failures (
   ip TEXT NOT NULL,
   at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS login_failures_at ON login_failures (at);
 `;
+
+/** Days of scan history kept. */
+export const SCAN_HISTORY_DAYS = 90;
 
 const now = () => new Date().toISOString();
 const str = (v: unknown): string | null => (v === null || v === undefined ? null : String(v));
@@ -177,6 +245,15 @@ export class Store {
       }
       const fcols = new Set((await this.db.execute('PRAGMA table_info(filters)')).rows.map((r) => String(r.name)));
       if (!fcols.has('last_search')) await this.db.execute('ALTER TABLE filters ADD COLUMN last_search TEXT');
+      // Insights history starts with what is already stored: jobs still listed, and past searches.
+      if (!(await this.db.execute('SELECT 1 FROM job_posts LIMIT 1')).rows.length) {
+        await this.db.execute(
+          `INSERT INTO job_posts (source, job_id, filter_name, posted_at, found_at)
+           SELECT m.source, m.job_id, m.filter_name, d.posted_at, d.first_seen_at FROM job_matches m
+           JOIN job_details d ON d.source = m.source AND d.job_id = m.job_id WHERE true ON CONFLICT DO NOTHING`,
+        );
+      }
+      if (!(await this.db.execute('SELECT 1 FROM scan_log LIMIT 1')).rows.length) await this.backfillScans();
       // "Dismiss" was replaced by "Delete": jobs dismissed before become deleted jobs.
       if ((await this.db.execute("SELECT 1 FROM job_details WHERE review_state = 'dismissed' LIMIT 1")).rows.length) {
         await this.db.batch(
@@ -190,6 +267,27 @@ export class Store {
       }
     })();
     return this.ready;
+  }
+
+  /** Scan history for searches made before the scan log existed, from the runs' summaries. */
+  private async backfillScans(): Promise<void> {
+    const runs = (await this.db.execute('SELECT id, started_at, finished_at, summary FROM runs WHERE summary IS NOT NULL ORDER BY id')).rows;
+    const stmts: InStatement[] = [];
+    for (const r of runs) {
+      let filters: { name: string; pages?: number; returned?: number; accepted?: number; newJobs?: number; moreResultsNotFetched?: boolean; error?: string | null }[] = [];
+      try {
+        filters = (JSON.parse(String(r.summary)) as { filters?: typeof filters }).filters ?? [];
+      } catch {
+        continue;
+      }
+      for (const f of filters) {
+        stmts.push({
+          sql: 'INSERT INTO scan_log (run_id, filter_name, trigger, started_at, finished_at, status, pages, returned, accepted, new_jobs, more_not_fetched, error) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          args: [Number(r.id), f.name, 'unknown', String(r.started_at), str(r.finished_at), f.error ? 'failed' : 'ok', f.pages ?? 0, f.returned ?? 0, f.accepted ?? 0, f.newJobs ?? 0, f.moreResultsNotFetched ? 1 : 0, f.error ?? null],
+        });
+      }
+    }
+    if (stmts.length) await this.db.batch(stmts, 'write');
   }
 
   close(): void {
@@ -239,6 +337,12 @@ export class Store {
       [f.name, f.url, f.enabled ? 1 : 0, now()],
     );
     return res.rowsAffected === 1;
+  }
+
+  /** When each filter was added (no scans were due before that). */
+  async filterCreatedAt(): Promise<Map<string, string>> {
+    const rows = (await this.run('SELECT name, created_at FROM filters')).rows;
+    return new Map(rows.map((r) => [String(r.name), String(r.created_at)]));
   }
 
   /** Each filter's most recent search, by filter name (filters never searched are absent). */
@@ -348,6 +452,10 @@ export class Store {
           ],
         },
         { sql: 'INSERT INTO job_matches (source, job_id, filter_name, matched_at) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING', args: [source, d.id, filterName, t] },
+        {
+          sql: 'INSERT INTO job_posts (source, job_id, filter_name, posted_at, found_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT DO UPDATE SET posted_at = COALESCE(excluded.posted_at, job_posts.posted_at)',
+          args: [source, d.id, filterName, d.postedAt, t],
+        },
       );
     }
     await this.batch(stmts);
@@ -428,6 +536,68 @@ export class Store {
     await this.run('INSERT INTO filter_baselines (source, filter_name, completed_at) VALUES (?, ?, ?) ON CONFLICT DO NOTHING', [source, filterName, now()]);
   }
 
+  // --- scan history and job counts (Insights page) ----------------------------
+
+  async scanStarted(runId: number, filter: string, trigger: string, startedAt: string): Promise<void> {
+    await this.run("INSERT INTO scan_log (run_id, filter_name, trigger, started_at, status) VALUES (?, ?, ?, ?, 'running')", [runId, filter, trigger, startedAt]);
+  }
+
+  async scanFinished(runId: number, filter: string, finishedAt: string, r: ScanResult): Promise<void> {
+    await this.run(
+      "UPDATE scan_log SET finished_at = ?, status = ?, pages = ?, returned = ?, accepted = ?, new_jobs = ?, more_not_fetched = ?, error = ? WHERE run_id = ? AND filter_name = ? AND status = 'running'",
+      [finishedAt, r.status, r.pages, r.returned, r.accepted, r.newJobs, r.moreNotFetched ? 1 : 0, r.error, runId, filter],
+    );
+  }
+
+  /** Scans that started in [from, to), oldest first. */
+  async scans(from: string, to: string): Promise<ScanRow[]> {
+    const rows = (await this.run('SELECT * FROM scan_log WHERE started_at >= ? AND started_at < ? ORDER BY started_at, id', [from, to])).rows;
+    return rows.map((r) => ({
+      id: Number(r.id),
+      runId: Number(r.run_id),
+      filter: String(r.filter_name),
+      trigger: String(r.trigger),
+      startedAt: String(r.started_at),
+      finishedAt: str(r.finished_at),
+      status: String(r.status),
+      pages: Number(r.pages),
+      returned: Number(r.returned),
+      accepted: Number(r.accepted),
+      newJobs: Number(r.new_jobs),
+      moreNotFetched: Number(r.more_not_fetched) === 1,
+      error: str(r.error),
+    }));
+  }
+
+  /**
+   * Jobs per local day, by posting time ("posted") or by when the bot found them ("found"):
+   * per filter, plus each day's distinct total across these filters (filter null).
+   * `offsetMinutes` is the viewer's time zone (e.g. 330 for India).
+   */
+  async jobDayCounts(by: 'posted' | 'found', filters: string[], from: string, offsetMinutes: number): Promise<DayCount[]> {
+    if (!filters.length) return [];
+    const col = by === 'posted' ? 'COALESCE(posted_at, found_at)' : 'found_at';
+    const shift = `${offsetMinutes >= 0 ? '+' : '-'}${Math.abs(Math.trunc(offsetMinutes))} minutes`;
+    const marks = filters.map(() => '?').join(',');
+    const where = `${col} >= ? AND filter_name IN (${marks})`;
+    const per = (await this.run(`SELECT date(${col}, ?) AS day, filter_name AS filter, COUNT(*) AS n FROM job_posts WHERE ${where} GROUP BY day, filter_name`, [shift, from, ...filters])).rows;
+    const all = (await this.run(`SELECT date(${col}, ?) AS day, COUNT(DISTINCT source || ':' || job_id) AS n FROM job_posts WHERE ${where} GROUP BY day`, [shift, from, ...filters])).rows;
+    return [
+      ...per.map((r) => ({ day: String(r.day), filter: String(r.filter), count: Number(r.n) })),
+      ...all.map((r) => ({ day: String(r.day), filter: null, count: Number(r.n) })),
+    ];
+  }
+
+  /** Jobs posted in [from, to): per filter, plus the distinct total (filter null). */
+  async jobsPostedBetween(filters: string[], from: string, to: string): Promise<{ filter: string | null; count: number }[]> {
+    if (!filters.length) return [{ filter: null, count: 0 }];
+    const marks = filters.map(() => '?').join(',');
+    const where = `COALESCE(posted_at, found_at) >= ? AND COALESCE(posted_at, found_at) < ? AND filter_name IN (${marks})`;
+    const per = (await this.run(`SELECT filter_name AS filter, COUNT(*) AS n FROM job_posts WHERE ${where} GROUP BY filter_name`, [from, to, ...filters])).rows;
+    const all = (await this.run(`SELECT COUNT(DISTINCT source || ':' || job_id) AS n FROM job_posts WHERE ${where}`, [from, to, ...filters])).rows;
+    return [...per.map((r) => ({ filter: String(r.filter), count: Number(r.n) })), { filter: null, count: Number(all[0]?.n ?? 0) }];
+  }
+
   // --- runs -----------------------------------------------------------------
 
   async startRun(source: string): Promise<number> {
@@ -496,6 +666,9 @@ export class Store {
       { sql: 'DELETE FROM job_matches WHERE matched_at < ?', args: [cutoff] },
       { sql: 'DELETE FROM runs WHERE started_at < ?', args: [cutoff] },
       { sql: 'DELETE FROM deleted_jobs WHERE deleted_at < ?', args: [cutoff] },
+      { sql: 'DELETE FROM job_posts WHERE found_at < ?', args: [cutoff] },
+      // Scan history holds no Upwork content (only times and counts), so it is kept longer.
+      { sql: 'DELETE FROM scan_log WHERE started_at < ?', args: [new Date(Date.now() - SCAN_HISTORY_DAYS * 86_400_000).toISOString()] },
     ]);
   }
 }

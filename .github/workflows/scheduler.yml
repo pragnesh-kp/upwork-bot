@@ -1,16 +1,19 @@
 name: Scheduler
 
-# Calls the bot's /api/cron every 30 minutes. Vercel Hobby runs its own cron only once a day,
-# so this is what makes the searches automatic. Each call continues a running search, or
-# starts one for every filter whose 30 minutes (SEARCH_INTERVAL_MINUTES) have passed.
-# GitHub may start scheduled runs late, so a filter can wait up to about an hour.
+# Calls the bot's /api/cron. Vercel Hobby runs its own cron only once a day, so this is what
+# makes the searches automatic. Each call continues a running search, or starts one for every
+# filter whose 30 minutes (SEARCH_INTERVAL_MINUTES) have passed.
 #
 # Needs the repository secret CRON_SECRET (Settings → Secrets and variables → Actions),
 # with the same value as CRON_SECRET in the Vercel project.
+#
+# GitHub drops many scheduled runs when it is busy (on 29 Oct 2026 only 6 of 48 ran), worst at
+# :00 and :30. So it asks every 10 minutes at odd minutes; a call when nothing is due does nothing.
+# For dependable scans also add an external caller (cron-job.org), see DEPLOY.md step 6.
 
 on:
   schedule:
-    - cron: '*/30 * * * *'
+    - cron: '4,14,24,34,44,54 * * * *'
   workflow_dispatch:
 
 concurrency:

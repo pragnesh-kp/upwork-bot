@@ -16,10 +16,18 @@ const REQUEST_PREFIX = 'search_request:';
 const MIN_PAGES = 2;
 /** Attempts per page (across calls) before a search target is given up for this cycle. */
 const MAX_ATTEMPTS = 3;
+/** A filter last searched more than this many intervals ago gets a catch-up search (more pages). */
+const CATCH_UP_AFTER_INTERVALS = 2;
+
+/** What started a search: shown in the scan history. */
+export type Trigger = 'scheduler' | 'dashboard' | 'manual' | 'new-filter' | 'connect';
 
 export interface FilterSummary {
   name: string;
   firstRun: boolean;
+  /** Last searched long ago (the scheduler missed calls): read more pages, so no posts are skipped. */
+  catchUp?: boolean;
+  trigger?: Trigger;
   pages: number;
   returned: number;
   accepted: number;
@@ -117,8 +125,17 @@ export function progressOf(c: Cycle): Progress {
  * its own row, so requests made while a search is running are never lost; the next
  * `step` picks them up.
  */
-export async function requestSearch(store: Store, filter: string | null): Promise<void> {
-  await store.kvSet(`${REQUEST_PREFIX}${filter ?? '*'}`, new Date().toISOString());
+export async function requestSearch(store: Store, filter: string | null, trigger: Trigger = 'manual'): Promise<void> {
+  await store.kvSet(`${REQUEST_PREFIX}${filter ?? '*'}`, JSON.stringify({ at: new Date().toISOString(), trigger }));
+}
+
+/** The trigger saved with a request (older requests hold only a timestamp). */
+function requestTrigger(raw: string | null): Trigger {
+  try {
+    return (JSON.parse(raw ?? '') as { trigger?: Trigger }).trigger ?? 'manual';
+  } catch {
+    return 'manual';
+  }
 }
 
 export async function hasPendingWork(store: Store): Promise<boolean> {
@@ -129,16 +146,24 @@ export async function hasPendingWork(store: Store): Promise<boolean> {
 async function absorbRequests(d: EngineDeps, cycle: Cycle | null): Promise<Cycle | null> {
   const keys = await d.store.kvKeys(REQUEST_PREFIX);
   if (!keys.length) return cycle;
-  const wanted = new Set(keys.map((k) => k.slice(REQUEST_PREFIX.length)));
+  const wanted = new Map<string, Trigger>();
+  for (const k of keys) wanted.set(k.slice(REQUEST_PREFIX.length), requestTrigger(await d.store.kvGet(k)));
   const filters = (await enabledFilters(d.store)).filter((f) => wanted.has('*') || wanted.has(f.name));
   for (const k of keys) await d.store.kvDelete(k);
   const fresh = filters.filter((f) => !cycle?.filters.some((s) => s.name === f.name));
   if (!fresh.length) return cycle;
-  const c: Cycle = cycle ?? { id: randomUUID(), runId: await d.store.startRun(SOURCE), startedAt: new Date((d.now ?? Date.now)()).toISOString(), tasks: [], filters: [], stoppedEarly: null, retryAfter: null };
+  const nowMs = (d.now ?? Date.now)();
+  const c: Cycle = cycle ?? { id: randomUUID(), runId: await d.store.startRun(SOURCE), startedAt: new Date(nowMs).toISOString(), tasks: [], filters: [], stoppedEarly: null, retryAfter: null };
+  const last = await d.store.filterLastSearches();
   for (const f of fresh) {
+    const trigger = wanted.get(f.name) ?? wanted.get('*') ?? 'manual';
+    const lastStart = last.get(f.name)?.startedAt;
+    await d.store.scanStarted(c.runId, f.name, trigger, new Date(nowMs).toISOString());
     c.filters.push({
       name: f.name,
       firstRun: !(await d.store.baselineDone(SOURCE, f.name)),
+      catchUp: !!lastStart && nowMs - Date.parse(lastStart) > CATCH_UP_AFTER_INTERVALS * d.cfg.intervalMinutes * 60_000,
+      trigger,
       pages: 0,
       returned: 0,
       accepted: 0,
@@ -273,7 +298,8 @@ export async function step(d: EngineDeps, budgetMs: number): Promise<StepResult>
           const unseen = keep.filter((k) => !seen.has(k.details.id)).length;
 
           task.cursor = page.nextCursor;
-          const maxPages = fs.firstRun ? cfg.search.firstRunMaxPages : cfg.search.maxPagesPerFilter;
+          // After a long gap more jobs piled up: read as far as a first search would (it still stops at a known page).
+          const maxPages = fs.firstRun || fs.catchUp ? cfg.search.firstRunMaxPages : cfg.search.maxPagesPerFilter;
           if (!task.cursor) task.done = true;
           // Newest first: a page where every job is too old means the older pages are too.
           else if (page.jobs.length > 0 && page.jobs.every(tooOld)) task.done = true;
@@ -303,6 +329,15 @@ async function finish(d: EngineDeps, cycle: Cycle): Promise<RunSummary> {
     if (f.firstRun && !f.error) await d.store.completeBaseline(SOURCE, f.name);
     // Failed searches count too, so a broken filter or sign-in is retried next interval, not every call.
     await d.store.recordFilterSearch(f.name, { startedAt: cycle.startedAt, finishedAt, status: f.error ? 'failed' : 'ok', newJobs: f.newJobs, error: f.error });
+    await d.store.scanFinished(cycle.runId, f.name, finishedAt, {
+      status: f.error ? 'failed' : 'ok',
+      pages: f.pages,
+      returned: f.returned,
+      accepted: f.accepted,
+      newJobs: f.newJobs,
+      moreNotFetched: f.moreResultsNotFetched,
+      error: f.error,
+    });
   }
   const failed = cycle.filters.filter((f) => f.error).length;
   const summary: RunSummary = {
@@ -351,14 +386,14 @@ export async function nextDueAt(d: EngineDeps): Promise<string | null> {
  * What the scheduler calls (every few minutes): continues a running search, or starts
  * one for every filter whose SEARCH_INTERVAL_MINUTES have passed since its last search.
  */
-export async function tick(d: EngineDeps, budgetMs = d.cfg.stepBudgetSeconds * 1000): Promise<StepResult> {
+export async function tick(d: EngineDeps, budgetMs = d.cfg.stepBudgetSeconds * 1000, trigger: Trigger = 'scheduler'): Promise<StepResult> {
   const now = d.now ?? Date.now;
   if (!(await hasPendingWork(d.store))) {
     const all = await filterSchedules(d);
     const due = all.filter((s) => Date.parse(s.nextDueAt) - DUE_SLACK_MS <= now());
     if (!due.length) return { status: 'idle' };
-    if (due.length === all.length) await requestSearch(d.store, null);
-    else for (const s of due) await requestSearch(d.store, s.name);
+    if (due.length === all.length) await requestSearch(d.store, null, trigger);
+    else for (const s of due) await requestSearch(d.store, s.name, trigger);
   }
   return step(d, budgetMs);
 }

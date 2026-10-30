@@ -77,13 +77,24 @@ TURSO_AUTH_TOKEN=…
 
 ## 6. Set up the scheduler (GitHub Actions)
 
-Vercel's free plan runs its own scheduler only once a day, so the repository's workflow [`.github/workflows/scheduler.yml`](.github/workflows/scheduler.yml) calls `/api/cron` every 30 minutes instead. It is free for a public repository. It needs one secret:
+Vercel's free plan runs its own scheduler only once a day, so something else must call `/api/cron`. **GitHub's scheduler alone is not dependable:** when GitHub is busy it drops scheduled runs (on 29 Oct 2026 it ran 6 times instead of 48, gaps of 4–5 hours), and the bot then only scans while the dashboard is open. Use **cron-job.org as the main caller** (6a) and keep GitHub as a backup (6b). Calls when nothing is due do nothing, so two callers are fine. The dashboard's **Insights** tab shows every missed scan.
+
+### 6a. cron-job.org (recommended)
+
+1. Create a free account at [cron-job.org](https://cron-job.org) → **Create cronjob**.
+2. **URL:** `https://upwork-bot-gules.vercel.app/api/cron` (or your own domain). **Schedule:** every 5 minutes.
+3. **Advanced → Headers:** add `Authorization` with the value `Bearer <CRON_SECRET>` (the same value as in Vercel). Request timeout: 30 s is enough; the bot answers within ~20 s and keeps searching in the background.
+4. Save, then **Test run**: it should answer `{"status":"idle"}` (or `finished` / `continued`).
+
+### 6b. GitHub Actions (backup)
+
+The repository's workflow [`.github/workflows/scheduler.yml`](.github/workflows/scheduler.yml) calls `/api/cron` every 10 minutes (at :04, :14, …, avoiding the busy :00 and :30). It is free for a public repository. It needs one secret:
 
 1. On GitHub: **pragnesh-kp/upwork-bot → Settings → Secrets and variables → Actions → New repository secret**.
 2. **Name:** `CRON_SECRET`. **Secret:** exactly the same value as `CRON_SECRET` in Vercel (step 4). Save.
 3. **Actions** tab → **Scheduler** → **Run workflow**. The run should be green and print `{"status":"idle"}` (or `finished` / `continued`).
 
-A filter is due again 30 minutes after its previous search and is searched on the next call, so with GitHub's delays a filter can wait up to about an hour. A red run that says `HTTP 401` means the two `CRON_SECRET` values differ. The dashboard's top line warns when the scheduler hasn't called for over 60 minutes. If the address of the site changes, update `APP_URL` in the workflow file.
+A filter is due again 30 minutes after its previous search and is searched on the next call. A red run that says `HTTP 401` means the two `CRON_SECRET` values differ. The dashboard's top line warns when the scheduler hasn't called for over 60 minutes. If the address of the site changes, update `APP_URL` in the workflow file.
 
 GitHub pauses scheduled workflows in a public repository after 60 days without any commit; the Actions tab then offers to turn it back on.
 
