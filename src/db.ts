@@ -1,7 +1,8 @@
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createClient, type Client, type InStatement, type Row } from '@libsql/client';
+import { createClient, type Client } from '@libsql/client';
+import { createPool, type Pool, type ResultSetHeader } from 'mysql2/promise';
 
 export interface DashboardJob {
   source: string;
@@ -208,62 +209,251 @@ CREATE TABLE IF NOT EXISTS login_failures (
 CREATE INDEX IF NOT EXISTS login_failures_at ON login_failures (at);
 `;
 
+/**
+ * The same tables for MySQL / MariaDB (Hostinger). Keys are VARCHAR (MySQL cannot index TEXT),
+ * and utf8mb4_bin compares text exactly like SQLite does (case-sensitive names, ISO times).
+ */
+const MYSQL_TABLE = 'ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin';
+const MYSQL_SCHEMA = [
+  `CREATE TABLE IF NOT EXISTS seen_jobs (
+    source VARCHAR(32) NOT NULL, job_id VARCHAR(128) NOT NULL, first_seen_at VARCHAR(32) NOT NULL, last_seen_at VARCHAR(32) NOT NULL,
+    PRIMARY KEY (source, job_id)
+  ) ${MYSQL_TABLE}`,
+  `CREATE TABLE IF NOT EXISTS job_details (
+    source VARCHAR(32) NOT NULL, job_id VARCHAR(128) NOT NULL, title TEXT NOT NULL, url TEXT, budget TEXT, contract_type TEXT,
+    posted_at VARCHAR(40), snippet TEXT, skills TEXT NOT NULL, client_country TEXT, payment_verified TINYINT, proposals TEXT,
+    baseline TINYINT NOT NULL DEFAULT 0, review_state VARCHAR(16) NOT NULL DEFAULT 'new',
+    first_seen_at VARCHAR(32) NOT NULL, last_seen_at VARCHAR(32) NOT NULL,
+    PRIMARY KEY (source, job_id), INDEX job_details_seen (first_seen_at)
+  ) ${MYSQL_TABLE}`,
+  `CREATE TABLE IF NOT EXISTS job_matches (
+    source VARCHAR(32) NOT NULL, job_id VARCHAR(128) NOT NULL, filter_name VARCHAR(191) NOT NULL, matched_at VARCHAR(32) NOT NULL,
+    PRIMARY KEY (source, job_id, filter_name)
+  ) ${MYSQL_TABLE}`,
+  `CREATE TABLE IF NOT EXISTS deleted_jobs (
+    source VARCHAR(32) NOT NULL, job_id VARCHAR(128) NOT NULL, deleted_at VARCHAR(32) NOT NULL,
+    PRIMARY KEY (source, job_id)
+  ) ${MYSQL_TABLE}`,
+  `CREATE TABLE IF NOT EXISTS filter_baselines (
+    source VARCHAR(32) NOT NULL, filter_name VARCHAR(191) NOT NULL, completed_at VARCHAR(32) NOT NULL,
+    PRIMARY KEY (source, filter_name)
+  ) ${MYSQL_TABLE}`,
+  `CREATE TABLE IF NOT EXISTS runs (
+    id BIGINT NOT NULL AUTO_INCREMENT, source VARCHAR(32) NOT NULL, started_at VARCHAR(32) NOT NULL, finished_at VARCHAR(32),
+    status VARCHAR(16) NOT NULL, summary MEDIUMTEXT,
+    PRIMARY KEY (id)
+  ) ${MYSQL_TABLE}`,
+  `CREATE TABLE IF NOT EXISTS locks (
+    name VARCHAR(191) NOT NULL, owner VARCHAR(191) NOT NULL, expires_at VARCHAR(32) NOT NULL,
+    PRIMARY KEY (name)
+  ) ${MYSQL_TABLE}`,
+  `CREATE TABLE IF NOT EXISTS filters (
+    name VARCHAR(191) NOT NULL, url TEXT NOT NULL, enabled TINYINT NOT NULL DEFAULT 1, position INT NOT NULL,
+    created_at VARCHAR(32) NOT NULL, last_search TEXT,
+    PRIMARY KEY (name)
+  ) ${MYSQL_TABLE}`,
+  `CREATE TABLE IF NOT EXISTS kv (
+    \`key\` VARCHAR(191) NOT NULL, value MEDIUMTEXT NOT NULL, updated_at VARCHAR(32) NOT NULL,
+    PRIMARY KEY (\`key\`)
+  ) ${MYSQL_TABLE}`,
+  `CREATE TABLE IF NOT EXISTS scan_log (
+    id BIGINT NOT NULL AUTO_INCREMENT, run_id BIGINT NOT NULL, filter_name VARCHAR(191) NOT NULL, \`trigger\` VARCHAR(32) NOT NULL,
+    started_at VARCHAR(32) NOT NULL, finished_at VARCHAR(32), status VARCHAR(16) NOT NULL,
+    pages INT NOT NULL DEFAULT 0, returned INT NOT NULL DEFAULT 0, accepted INT NOT NULL DEFAULT 0, new_jobs INT NOT NULL DEFAULT 0,
+    more_not_fetched TINYINT NOT NULL DEFAULT 0, error TEXT,
+    PRIMARY KEY (id), INDEX scan_log_started (started_at), INDEX scan_log_run (run_id, filter_name)
+  ) ${MYSQL_TABLE}`,
+  `CREATE TABLE IF NOT EXISTS job_posts (
+    source VARCHAR(32) NOT NULL, job_id VARCHAR(128) NOT NULL, filter_name VARCHAR(191) NOT NULL, posted_at VARCHAR(40), found_at VARCHAR(32) NOT NULL,
+    PRIMARY KEY (source, job_id, filter_name), INDEX job_posts_posted (posted_at), INDEX job_posts_found (found_at)
+  ) ${MYSQL_TABLE}`,
+  `CREATE TABLE IF NOT EXISTS login_failures (
+    ip TEXT NOT NULL, at VARCHAR(32) NOT NULL,
+    INDEX login_failures_at (at)
+  ) ${MYSQL_TABLE}`,
+];
+
+/** Every table, in an order that copy-db can follow. */
+export const TABLES = ['filters', 'kv', 'seen_jobs', 'job_details', 'job_matches', 'deleted_jobs', 'filter_baselines', 'runs', 'scan_log', 'job_posts', 'locks', 'login_failures'] as const;
+
 /** Days of scan history kept. */
 export const SCAN_HISTORY_DAYS = 90;
 
 const now = () => new Date().toISOString();
 const str = (v: unknown): string | null => (v === null || v === undefined ? null : String(v));
+/** A JSON array column: MySQL may hand it over already parsed. */
+const jsonList = (v: unknown): unknown[] => (Array.isArray(v) ? v : (JSON.parse(String(v ?? '[]')) as unknown[] | null) ?? []);
+
+type Arg = string | number | null;
+type Stmt = string | { sql: string; args: Arg[] };
+type Row = Record<string, unknown>;
+interface QueryResult {
+  rows: Row[];
+  rowsAffected: number;
+  lastInsertId: number;
+}
+
+/** The database behind the Store: libSQL (SQLite file or Turso) or MySQL (Hostinger). */
+interface Driver {
+  readonly mysql: boolean;
+  createTables(): Promise<void>;
+  execute(sql: string, args?: Arg[]): Promise<QueryResult>;
+  /** All statements in one transaction. */
+  batch(stmts: Stmt[]): Promise<void>;
+  close(): Promise<void>;
+}
+
+class LibsqlDriver implements Driver {
+  readonly mysql = false;
+  private readonly client: Client;
+  constructor(client: Client) {
+    this.client = client;
+  }
+  async createTables() {
+    await this.client.executeMultiple(SCHEMA);
+  }
+  async execute(sql: string, args: Arg[] = []) {
+    const r = await this.client.execute({ sql, args });
+    return { rows: r.rows as unknown as Row[], rowsAffected: r.rowsAffected, lastInsertId: Number(r.lastInsertRowid ?? 0) };
+  }
+  async batch(stmts: Stmt[]) {
+    await this.client.batch(stmts, 'write');
+  }
+  async close() {
+    this.client.close();
+  }
+}
+
+class MysqlDriver implements Driver {
+  readonly mysql = true;
+  private readonly pool: Pool;
+  constructor(url: string) {
+    const u = new URL(url);
+    this.pool = createPool({
+      host: decodeURIComponent(u.hostname),
+      port: Number(u.port || 3306),
+      user: decodeURIComponent(u.username),
+      password: decodeURIComponent(u.password),
+      database: decodeURIComponent(u.pathname.replace(/^\//, '')),
+      charset: 'utf8mb4',
+      // DATE values come back as 'YYYY-MM-DD' text, like SQLite's date().
+      dateStrings: true,
+      // An UPDATE that changes nothing still counts its row (as SQLite does): setReviewState relies on it.
+      flags: ['FOUND_ROWS'],
+      connectionLimit: 5,
+      enableKeepAlive: true,
+    });
+  }
+  async createTables() {
+    for (const sql of MYSQL_SCHEMA) await this.pool.query(sql);
+  }
+  async execute(sql: string, args: Arg[] = []) {
+    const [r] = await this.pool.query(sql, args);
+    if (Array.isArray(r)) return { rows: r as Row[], rowsAffected: 0, lastInsertId: 0 };
+    const h = r as ResultSetHeader;
+    return { rows: [], rowsAffected: h.affectedRows, lastInsertId: Number(h.insertId ?? 0) };
+  }
+  async batch(stmts: Stmt[]) {
+    const conn = await this.pool.getConnection();
+    try {
+      await conn.beginTransaction();
+      for (const s of stmts) await (typeof s === 'string' ? conn.query(s) : conn.query(s.sql, s.args));
+      await conn.commit();
+    } catch (err) {
+      await conn.rollback().catch(() => {});
+      throw err;
+    } finally {
+      conn.release();
+    }
+  }
+  async close() {
+    await this.pool.end();
+  }
+}
 
 /**
- * All persistent state, in a libSQL database: a local SQLite file for
- * development, or Turso (TURSO_DATABASE_URL) on Vercel. Every write that must
- * be all-or-nothing goes through one `batch` (a transaction).
+ * All persistent state: a local SQLite file for development, Turso (TURSO_DATABASE_URL)
+ * on Vercel, or MySQL (mysql://…) on Hostinger. Every write that must be all-or-nothing
+ * goes through one `batch` (a transaction).
  */
 export class Store {
-  readonly db: Client;
+  private readonly db: Driver;
   private ready: Promise<void> | null = null;
 
-  constructor(client: Client) {
-    this.db = client;
+  private constructor(driver: Driver) {
+    this.db = driver;
   }
 
   static open(url: string, authToken?: string | null): Store {
+    if (/^mysql:\/\//i.test(url)) return new Store(new MysqlDriver(url));
     if (url.startsWith('file:') && !url.includes(':memory:')) {
       const path = url.startsWith('file:///') ? fileURLToPath(url) : url.slice('file:'.length);
       mkdirSync(dirname(path), { recursive: true });
     }
-    return new Store(createClient({ url, ...(authToken ? { authToken } : {}) }));
+    return new Store(new LibsqlDriver(createClient({ url, ...(authToken ? { authToken } : {}) })));
+  }
+
+  // --- SQL that differs between SQLite and MySQL -------------------------------
+
+  private get my(): boolean {
+    return this.db.mysql;
+  }
+
+  /** `INSERT INTO <rest>` that skips rows whose key already exists. */
+  private insertIgnore(rest: string): string {
+    return this.my ? `INSERT IGNORE INTO ${rest}` : `INSERT INTO ${rest} ON CONFLICT DO NOTHING`;
+  }
+
+  /** Upsert tail: on a key conflict, set these columns to the new row's values. */
+  private onConflictSet(target: string, cols: string[]): string {
+    return this.my
+      ? `ON DUPLICATE KEY UPDATE ${cols.map((c) => `${c} = VALUES(${c})`).join(', ')}`
+      : `ON CONFLICT(${target}) DO UPDATE SET ${cols.map((c) => `${c} = excluded.${c}`).join(', ')}`;
+  }
+
+  /** `DELETE FROM <table> AS t` (MySQL/MariaDB need the multi-table form for an alias). */
+  private deleteAs(table: string): string {
+    return this.my ? `DELETE t FROM ${table} AS t` : `DELETE FROM ${table} AS t`;
+  }
+
+  /** A stored ISO time (2026-11-03T10:20:30.000Z) as a MySQL DATETIME. */
+  private static myTime(expr: string): string {
+    return `CAST(REPLACE(REPLACE(${expr}, 'T', ' '), 'Z', '') AS DATETIME(3))`;
+  }
+
+  private distinctJobs(): string {
+    return this.my ? 'COUNT(DISTINCT source, job_id)' : "COUNT(DISTINCT source || ':' || job_id)";
   }
 
   /** Creates or upgrades the tables once per process. Every public method awaits it. */
   init(): Promise<void> {
     this.ready ??= (async () => {
-      await this.db.executeMultiple(SCHEMA);
-      const cols = new Set((await this.db.execute('PRAGMA table_info(job_details)')).rows.map((r) => String(r.name)));
-      for (const [name, type] of [['client_country', 'TEXT'], ['payment_verified', 'INTEGER'], ['proposals', 'TEXT']] as const) {
-        if (!cols.has(name)) await this.db.execute(`ALTER TABLE job_details ADD COLUMN ${name} ${type}`);
+      await this.db.createTables();
+      if (!this.my) {
+        // Columns added after the first SQLite/Turso version (MySQL tables are created complete).
+        const cols = new Set((await this.db.execute('PRAGMA table_info(job_details)')).rows.map((r) => String(r.name)));
+        for (const [name, type] of [['client_country', 'TEXT'], ['payment_verified', 'INTEGER'], ['proposals', 'TEXT']] as const) {
+          if (!cols.has(name)) await this.db.execute(`ALTER TABLE job_details ADD COLUMN ${name} ${type}`);
+        }
+        const fcols = new Set((await this.db.execute('PRAGMA table_info(filters)')).rows.map((r) => String(r.name)));
+        if (!fcols.has('last_search')) await this.db.execute('ALTER TABLE filters ADD COLUMN last_search TEXT');
       }
-      const fcols = new Set((await this.db.execute('PRAGMA table_info(filters)')).rows.map((r) => String(r.name)));
-      if (!fcols.has('last_search')) await this.db.execute('ALTER TABLE filters ADD COLUMN last_search TEXT');
       // Insights history starts with what is already stored: jobs still listed, and past searches.
       if (!(await this.db.execute('SELECT 1 FROM job_posts LIMIT 1')).rows.length) {
         await this.db.execute(
-          `INSERT INTO job_posts (source, job_id, filter_name, posted_at, found_at)
+          this.insertIgnore(`job_posts (source, job_id, filter_name, posted_at, found_at)
            SELECT m.source, m.job_id, m.filter_name, d.posted_at, d.first_seen_at FROM job_matches m
-           JOIN job_details d ON d.source = m.source AND d.job_id = m.job_id WHERE true ON CONFLICT DO NOTHING`,
+           JOIN job_details d ON d.source = m.source AND d.job_id = m.job_id WHERE true`),
         );
       }
       if (!(await this.db.execute('SELECT 1 FROM scan_log LIMIT 1')).rows.length) await this.backfillScans();
       // "Dismiss" was replaced by "Delete": jobs dismissed before become deleted jobs.
       if ((await this.db.execute("SELECT 1 FROM job_details WHERE review_state = 'dismissed' LIMIT 1")).rows.length) {
-        await this.db.batch(
-          [
-            { sql: "INSERT INTO deleted_jobs (source, job_id, deleted_at) SELECT source, job_id, ? FROM job_details WHERE review_state = 'dismissed' ON CONFLICT DO NOTHING", args: [now()] },
-            `DELETE FROM job_matches AS t WHERE EXISTS (SELECT 1 FROM job_details d WHERE d.source = t.source AND d.job_id = t.job_id AND d.review_state = 'dismissed')`,
-            "DELETE FROM job_details WHERE review_state = 'dismissed'",
-          ],
-          'write',
-        );
+        await this.db.batch([
+          { sql: this.insertIgnore("deleted_jobs (source, job_id, deleted_at) SELECT source, job_id, ? FROM job_details WHERE review_state = 'dismissed'"), args: [now()] },
+          `${this.deleteAs('job_matches')} WHERE EXISTS (SELECT 1 FROM job_details d WHERE d.source = t.source AND d.job_id = t.job_id AND d.review_state = 'dismissed')`,
+          "DELETE FROM job_details WHERE review_state = 'dismissed'",
+        ]);
       }
     })();
     return this.ready;
@@ -272,7 +462,7 @@ export class Store {
   /** Scan history for searches made before the scan log existed, from the runs' summaries. */
   private async backfillScans(): Promise<void> {
     const runs = (await this.db.execute('SELECT id, started_at, finished_at, summary FROM runs WHERE summary IS NOT NULL ORDER BY id')).rows;
-    const stmts: InStatement[] = [];
+    const stmts: Stmt[] = [];
     for (const r of runs) {
       let filters: { name: string; pages?: number; returned?: number; accepted?: number; newJobs?: number; moreResultsNotFetched?: boolean; error?: string | null }[] = [];
       try {
@@ -282,45 +472,64 @@ export class Store {
       }
       for (const f of filters) {
         stmts.push({
-          sql: 'INSERT INTO scan_log (run_id, filter_name, trigger, started_at, finished_at, status, pages, returned, accepted, new_jobs, more_not_fetched, error) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          sql: 'INSERT INTO scan_log (run_id, filter_name, `trigger`, started_at, finished_at, status, pages, returned, accepted, new_jobs, more_not_fetched, error) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
           args: [Number(r.id), f.name, 'unknown', String(r.started_at), str(r.finished_at), f.error ? 'failed' : 'ok', f.pages ?? 0, f.returned ?? 0, f.accepted ?? 0, f.newJobs ?? 0, f.moreResultsNotFetched ? 1 : 0, f.error ?? null],
         });
       }
     }
-    if (stmts.length) await this.db.batch(stmts, 'write');
+    if (stmts.length) await this.db.batch(stmts);
   }
 
-  close(): void {
-    this.db.close();
+  close(): Promise<void> {
+    return this.db.close();
   }
 
-  private async run(sql: string, args: (string | number | null)[] = []) {
+  private async run(sql: string, args: Arg[] = []) {
     await this.init();
-    return this.db.execute({ sql, args });
+    return this.db.execute(sql, args);
   }
 
-  private async batch(stmts: InStatement[]): Promise<void> {
+  private async batch(stmts: Stmt[]): Promise<void> {
     await this.init();
-    if (stmts.length) await this.db.batch(stmts, 'write');
+    if (stmts.length) await this.db.batch(stmts);
+  }
+
+  // --- copying between databases (copy-db) --------------------------------------
+
+  async exportTable(table: (typeof TABLES)[number]): Promise<Row[]> {
+    return (await this.run(`SELECT * FROM ${table}`)).rows;
+  }
+
+  /** Adds rows taken from another database; rows whose key already exists here are kept as they are. */
+  async importRows(table: (typeof TABLES)[number], rows: Row[]): Promise<void> {
+    for (let i = 0; i < rows.length; i += 200) {
+      await this.batch(
+        rows.slice(i, i + 200).map((r) => {
+          const cols = Object.keys(r);
+          const values = cols.map((c) => (r[c] === null || r[c] === undefined ? null : typeof r[c] === 'number' || typeof r[c] === 'bigint' ? Number(r[c]) : String(r[c])));
+          return { sql: this.insertIgnore(`${table} (${cols.map((c) => `\`${c}\``).join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`), args: values };
+        }),
+      );
+    }
   }
 
   // --- settings -------------------------------------------------------------
 
   async kvGet(key: string): Promise<string | null> {
-    return str((await this.run('SELECT value FROM kv WHERE key = ?', [key])).rows[0]?.value);
+    return str((await this.run('SELECT value FROM kv WHERE `key` = ?', [key])).rows[0]?.value);
   }
 
   async kvSet(key: string, value: string): Promise<void> {
-    await this.run('INSERT INTO kv (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at', [key, value, now()]);
+    await this.run(`INSERT INTO kv (\`key\`, value, updated_at) VALUES (?, ?, ?) ${this.onConflictSet('`key`', ['value', 'updated_at'])}`, [key, value, now()]);
   }
 
   async kvDelete(key: string): Promise<void> {
-    await this.run('DELETE FROM kv WHERE key = ?', [key]);
+    await this.run('DELETE FROM kv WHERE `key` = ?', [key]);
   }
 
   /** Keys starting with `prefix` (no LIKE, so "_" and "%" in keys are literal). */
   async kvKeys(prefix: string): Promise<string[]> {
-    return (await this.run('SELECT key FROM kv WHERE substr(key, 1, ?) = ? ORDER BY key', [prefix.length, prefix])).rows.map((r) => String(r.key));
+    return (await this.run('SELECT `key` FROM kv WHERE substr(`key`, 1, ?) = ? ORDER BY `key`', [prefix.length, prefix])).rows.map((r) => String(r.key));
   }
 
   // --- filters --------------------------------------------------------------
@@ -333,7 +542,7 @@ export class Store {
   /** Adds a filter at the end of the list. Returns false when the name is taken. */
   async addFilter(f: StoredFilter): Promise<boolean> {
     const res = await this.run(
-      'INSERT INTO filters (name, url, enabled, position, created_at) SELECT ?, ?, ?, COALESCE(MAX(position), 0) + 1, ? FROM filters WHERE true ON CONFLICT(name) DO NOTHING',
+      this.insertIgnore('filters (name, url, enabled, position, created_at) SELECT ?, ?, ?, COALESCE(MAX(position), 0) + 1, ? FROM filters WHERE true'),
       [f.name, f.url, f.enabled ? 1 : 0, now()],
     );
     return res.rowsAffected === 1;
@@ -363,8 +572,8 @@ export class Store {
       { sql: 'DELETE FROM filters WHERE name = ?', args: [name] },
       { sql: 'DELETE FROM job_matches WHERE filter_name = ?', args: [name] },
       { sql: 'DELETE FROM filter_baselines WHERE filter_name = ?', args: [name] },
-      `DELETE FROM job_details AS t WHERE ${orphan}`,
-      `DELETE FROM seen_jobs AS t WHERE ${orphan}`,
+      `${this.deleteAs('job_details')} WHERE ${orphan}`,
+      `${this.deleteAs('seen_jobs')} WHERE ${orphan}`,
     ]);
     return true;
   }
@@ -373,6 +582,11 @@ export class Store {
 
   /** One atomic statement: takes the lock if it is free or expired (a crashed holder's lock times out). */
   async acquireLock(name: string, owner: string, ttlMs: number): Promise<boolean> {
+    if (this.my) {
+      // MySQL: drop an expired lock, then only one caller's insert can win the key.
+      await this.run('DELETE FROM locks WHERE name = ? AND expires_at <= ?', [name, now()]);
+      return (await this.run('INSERT IGNORE INTO locks (name, owner, expires_at) VALUES (?, ?, ?)', [name, owner, new Date(Date.now() + ttlMs).toISOString()])).rowsAffected === 1;
+    }
     const res = await this.run(
       `INSERT INTO locks (name, owner, expires_at) VALUES (?, ?, ?)
        ON CONFLICT(name) DO UPDATE SET owner = excluded.owner, expires_at = excluded.expires_at WHERE locks.expires_at <= ?`,
@@ -409,7 +623,7 @@ export class Store {
   async deleteJob(source: string, jobId: string): Promise<boolean> {
     if (!(await this.run('SELECT 1 FROM job_details WHERE source = ? AND job_id = ?', [source, jobId])).rows.length) return false;
     await this.batch([
-      { sql: 'INSERT INTO deleted_jobs (source, job_id, deleted_at) VALUES (?, ?, ?) ON CONFLICT DO NOTHING', args: [source, jobId, now()] },
+      { sql: this.insertIgnore('deleted_jobs (source, job_id, deleted_at) VALUES (?, ?, ?)'), args: [source, jobId, now()] },
       { sql: 'DELETE FROM job_matches WHERE source = ? AND job_id = ?', args: [source, jobId] },
       { sql: 'DELETE FROM job_details WHERE source = ? AND job_id = ?', args: [source, jobId] },
     ]);
@@ -423,16 +637,14 @@ export class Store {
    */
   async saveJobs(source: string, filterName: string, jobs: { details: JobDetails; baseline: boolean }[]): Promise<void> {
     const t = now();
-    const stmts: InStatement[] = [];
+    const stmts: Stmt[] = [];
     for (const { details: d, baseline } of jobs) {
       stmts.push(
-        { sql: 'INSERT INTO seen_jobs (source, job_id, first_seen_at, last_seen_at) VALUES (?, ?, ?, ?) ON CONFLICT DO UPDATE SET last_seen_at = excluded.last_seen_at', args: [source, d.id, t, t] },
+        { sql: `INSERT INTO seen_jobs (source, job_id, first_seen_at, last_seen_at) VALUES (?, ?, ?, ?) ${this.onConflictSet('source, job_id', ['last_seen_at'])}`, args: [source, d.id, t, t] },
         {
           sql: `INSERT INTO job_details (source, job_id, title, url, budget, contract_type, posted_at, snippet, skills, client_country, payment_verified, proposals, baseline, first_seen_at, last_seen_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(source, job_id) DO UPDATE SET title = excluded.title, url = excluded.url, budget = excluded.budget,
-                  contract_type = excluded.contract_type, posted_at = excluded.posted_at, snippet = excluded.snippet, skills = excluded.skills,
-                  client_country = excluded.client_country, payment_verified = excluded.payment_verified, proposals = excluded.proposals, last_seen_at = excluded.last_seen_at`,
+                ${this.onConflictSet('source, job_id', ['title', 'url', 'budget', 'contract_type', 'posted_at', 'snippet', 'skills', 'client_country', 'payment_verified', 'proposals', 'last_seen_at'])}`,
           args: [
             source,
             d.id,
@@ -451,9 +663,11 @@ export class Store {
             t,
           ],
         },
-        { sql: 'INSERT INTO job_matches (source, job_id, filter_name, matched_at) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING', args: [source, d.id, filterName, t] },
+        { sql: this.insertIgnore('job_matches (source, job_id, filter_name, matched_at) VALUES (?, ?, ?, ?)'), args: [source, d.id, filterName, t] },
         {
-          sql: 'INSERT INTO job_posts (source, job_id, filter_name, posted_at, found_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT DO UPDATE SET posted_at = COALESCE(excluded.posted_at, job_posts.posted_at)',
+          sql: `INSERT INTO job_posts (source, job_id, filter_name, posted_at, found_at) VALUES (?, ?, ?, ?, ?) ${
+            this.my ? 'ON DUPLICATE KEY UPDATE posted_at = COALESCE(VALUES(posted_at), job_posts.posted_at)' : 'ON CONFLICT DO UPDATE SET posted_at = COALESCE(excluded.posted_at, job_posts.posted_at)'
+          }`,
           args: [source, d.id, filterName, d.postedAt, t],
         },
       );
@@ -479,10 +693,10 @@ export class Store {
       args.push(...q.excludeStates);
     }
     args.push(Math.min(2000, Math.max(1, q.limit ?? 200)));
-    const sql = `SELECT d.*, (SELECT json_group_array(filter_name) FROM job_matches m WHERE m.source = d.source AND m.job_id = d.job_id AND m.filter_name IN (${marks})) AS filters
+    const sql = `SELECT d.*, (SELECT ${this.my ? 'JSON_ARRAYAGG' : 'json_group_array'}(filter_name) FROM job_matches m WHERE m.source = d.source AND m.job_id = d.job_id AND m.filter_name IN (${marks})) AS filters
       FROM job_details d WHERE ${where}
       ORDER BY COALESCE(d.posted_at, d.first_seen_at) DESC LIMIT ?`;
-    return (await this.run(sql, args)).rows.map((r: Row) => ({
+    return (await this.run(sql, args)).rows.map((r) => ({
       source: String(r.source),
       jobId: String(r.job_id),
       title: String(r.title),
@@ -498,7 +712,7 @@ export class Store {
       baseline: Number(r.baseline) === 1,
       reviewState: String(r.review_state),
       firstSeenAt: String(r.first_seen_at),
-      filters: (JSON.parse(String(r.filters ?? '[]')) as (string | null)[]).filter((x): x is string => !!x),
+      filters: (jsonList(r.filters) as (string | null)[]).filter((x): x is string => !!x),
     }));
   }
 
@@ -533,13 +747,13 @@ export class Store {
   }
 
   async completeBaseline(source: string, filterName: string): Promise<void> {
-    await this.run('INSERT INTO filter_baselines (source, filter_name, completed_at) VALUES (?, ?, ?) ON CONFLICT DO NOTHING', [source, filterName, now()]);
+    await this.run(this.insertIgnore('filter_baselines (source, filter_name, completed_at) VALUES (?, ?, ?)'), [source, filterName, now()]);
   }
 
   // --- scan history and job counts (Insights page) ----------------------------
 
   async scanStarted(runId: number, filter: string, trigger: string, startedAt: string): Promise<void> {
-    await this.run("INSERT INTO scan_log (run_id, filter_name, trigger, started_at, status) VALUES (?, ?, ?, ?, 'running')", [runId, filter, trigger, startedAt]);
+    await this.run("INSERT INTO scan_log (run_id, filter_name, `trigger`, started_at, status) VALUES (?, ?, ?, ?, 'running')", [runId, filter, trigger, startedAt]);
   }
 
   async scanFinished(runId: number, filter: string, finishedAt: string, r: ScanResult): Promise<void> {
@@ -577,11 +791,13 @@ export class Store {
   async jobDayCounts(by: 'posted' | 'found', filters: string[], from: string, offsetMinutes: number): Promise<DayCount[]> {
     if (!filters.length) return [];
     const col = by === 'posted' ? 'COALESCE(posted_at, found_at)' : 'found_at';
-    const shift = `${offsetMinutes >= 0 ? '+' : '-'}${Math.abs(Math.trunc(offsetMinutes))} minutes`;
+    const minutes = Math.trunc(offsetMinutes);
+    const shift = this.my ? minutes : `${minutes >= 0 ? '+' : '-'}${Math.abs(minutes)} minutes`;
+    const day = this.my ? `DATE(DATE_ADD(${Store.myTime(col)}, INTERVAL ? MINUTE))` : `date(${col}, ?)`;
     const marks = filters.map(() => '?').join(',');
     const where = `${col} >= ? AND filter_name IN (${marks})`;
-    const per = (await this.run(`SELECT date(${col}, ?) AS day, filter_name AS filter, COUNT(*) AS n FROM job_posts WHERE ${where} GROUP BY day, filter_name`, [shift, from, ...filters])).rows;
-    const all = (await this.run(`SELECT date(${col}, ?) AS day, COUNT(DISTINCT source || ':' || job_id) AS n FROM job_posts WHERE ${where} GROUP BY day`, [shift, from, ...filters])).rows;
+    const per = (await this.run(`SELECT ${day} AS day, filter_name AS filter, COUNT(*) AS n FROM job_posts WHERE ${where} GROUP BY day, filter_name`, [shift, from, ...filters])).rows;
+    const all = (await this.run(`SELECT ${day} AS day, ${this.distinctJobs()} AS n FROM job_posts WHERE ${where} GROUP BY day`, [shift, from, ...filters])).rows;
     return [
       ...per.map((r) => ({ day: String(r.day), filter: String(r.filter), count: Number(r.n) })),
       ...all.map((r) => ({ day: String(r.day), filter: null, count: Number(r.n) })),
@@ -598,10 +814,12 @@ export class Store {
     const marks = filters.map(() => '?').join(',');
     const where = `${col} >= ? AND ${col} < ? AND filter_name IN (${marks})`;
     // Whole milliseconds first, so a job at exactly hh:00 never lands in the hour before.
-    const bucket = `CAST(ROUND((julianday(${col}) - julianday(?)) * 86400000) AS INTEGER) / 3600000`;
+    const bucket = this.my
+      ? `FLOOR(TIMESTAMPDIFF(MICROSECOND, ${Store.myTime('?')}, ${Store.myTime(col)}) / 3600000000)`
+      : `CAST(ROUND((julianday(${col}) - julianday(?)) * 86400000) AS INTEGER) / 3600000`;
     const args = [from, from, to, ...filters];
     const per = (await this.run(`SELECT ${bucket} AS h, filter_name AS filter, COUNT(*) AS n FROM job_posts WHERE ${where} GROUP BY h, filter_name`, args)).rows;
-    const all = (await this.run(`SELECT ${bucket} AS h, COUNT(DISTINCT source || ':' || job_id) AS n FROM job_posts WHERE ${where} GROUP BY h`, args)).rows;
+    const all = (await this.run(`SELECT ${bucket} AS h, ${this.distinctJobs()} AS n FROM job_posts WHERE ${where} GROUP BY h`, args)).rows;
     return [
       ...per.map((r) => ({ hour: Number(r.h), filter: String(r.filter), count: Number(r.n) })),
       ...all.map((r) => ({ hour: Number(r.h), filter: null, count: Number(r.n) })),
@@ -614,14 +832,14 @@ export class Store {
     const marks = filters.map(() => '?').join(',');
     const where = `COALESCE(posted_at, found_at) >= ? AND COALESCE(posted_at, found_at) < ? AND filter_name IN (${marks})`;
     const per = (await this.run(`SELECT filter_name AS filter, COUNT(*) AS n FROM job_posts WHERE ${where} GROUP BY filter_name`, [from, to, ...filters])).rows;
-    const all = (await this.run(`SELECT COUNT(DISTINCT source || ':' || job_id) AS n FROM job_posts WHERE ${where}`, [from, to, ...filters])).rows;
+    const all = (await this.run(`SELECT ${this.distinctJobs()} AS n FROM job_posts WHERE ${where}`, [from, to, ...filters])).rows;
     return [...per.map((r) => ({ filter: String(r.filter), count: Number(r.n) })), { filter: null, count: Number(all[0]?.n ?? 0) }];
   }
 
   // --- runs -----------------------------------------------------------------
 
   async startRun(source: string): Promise<number> {
-    return Number((await this.run("INSERT INTO runs (source, started_at, status) VALUES (?, ?, 'running')", [source, now()])).lastInsertRowid);
+    return (await this.run("INSERT INTO runs (source, started_at, status) VALUES (?, ?, 'running')", [source, now()])).lastInsertId;
   }
 
   async finishRun(id: number, status: 'ok' | 'partial' | 'failed', summary: unknown): Promise<void> {
@@ -670,12 +888,12 @@ export class Store {
    */
   async purge(days: number, maxJobAgeDays?: number): Promise<void> {
     const cutoff = new Date(Date.now() - days * 86_400_000).toISOString();
-    const tooOld: InStatement[] = [];
+    const tooOld: Stmt[] = [];
     if (maxJobAgeDays) {
       const ageCutoff = new Date(Date.now() - maxJobAgeDays * 86_400_000).toISOString();
       tooOld.push(
         { sql: "DELETE FROM job_details WHERE posted_at IS NOT NULL AND posted_at < ? AND review_state <> 'saved'", args: [ageCutoff] },
-        'DELETE FROM job_matches AS t WHERE NOT EXISTS (SELECT 1 FROM job_details d WHERE d.source = t.source AND d.job_id = t.job_id)',
+        `${this.deleteAs('job_matches')} WHERE NOT EXISTS (SELECT 1 FROM job_details d WHERE d.source = t.source AND d.job_id = t.job_id)`,
       );
     }
     await this.batch([

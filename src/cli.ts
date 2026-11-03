@@ -1,8 +1,8 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { ConfigError, loadConfig, loadEnvFile, type Config } from './config.ts';
-import { Store, type JobDetails } from './db.ts';
+import { ConfigError, loadConfig, loadEnvFile, mysqlUrl, tursoSettings, type Config } from './config.ts';
+import { Store, TABLES, type JobDetails } from './db.ts';
 import { filterSchedules, getCycle, requestSearch, SOURCE, step, type RunSummary } from './engine.ts';
 import { loadFilters, toFilterDefs, type FilterDef } from './filters.ts';
 import { configureLog, log } from './log.ts';
@@ -23,7 +23,37 @@ function args() {
 }
 
 function where(cfg: Config): string {
-  return cfg.db.url.startsWith('file:') ? `local database ${cfg.db.url}` : `Turso database ${new URL(cfg.db.url).host}`;
+  if (cfg.db.url.startsWith('file:')) return `local database ${cfg.db.url}`;
+  const u = new URL(cfg.db.url);
+  return u.protocol === 'mysql:' ? `MySQL database ${decodeURIComponent(u.pathname.slice(1))} on ${u.host}` : `Turso database ${u.host}`;
+}
+
+/**
+ * Moves everything from Turso (TURSO_DATABASE_URL) into MySQL (MYSQL_* settings):
+ * filters, the encrypted Upwork sign-in, jobs and their review states, scan history.
+ * Rows already in MySQL are kept, so running it twice is harmless.
+ */
+async function copyDb() {
+  const target = mysqlUrl(process.env);
+  const source = tursoSettings(process.env);
+  if (!target) throw new ConfigError('Set MYSQL_HOST, MYSQL_USER, MYSQL_PASSWORD and MYSQL_DATABASE in .env (the Hostinger database) first.');
+  if (!source.url || source.url.startsWith('mysql')) throw new ConfigError('Set TURSO_DATABASE_URL and TURSO_AUTH_TOKEN in .env (the database to copy from) first.');
+  const from = Store.open(source.url, source.token);
+  const to = Store.open(target);
+  try {
+    out(`Copying ${source.url.startsWith('file:') ? source.url : `Turso database ${new URL(source.url).host}`} → MySQL database ${decodeURIComponent(new URL(target).pathname.slice(1))}…`);
+    for (const table of TABLES) {
+      // Locks and failed logins are short-lived; never copy them.
+      if (table === 'locks' || table === 'login_failures') continue;
+      const rows = await from.exportTable(table);
+      await to.importRows(table, rows);
+      out(`  ${table}: ${rows.length} row(s)`);
+    }
+    out('Done. Use the same TOKEN_ENCRYPTION_KEY on Hostinger, or the copied Upwork sign-in cannot be read.');
+  } finally {
+    await from.close();
+    await to.close();
+  }
 }
 
 function printFilterReport(filters: FilterDef[], discovery: Discovery | null) {
@@ -119,10 +149,19 @@ async function importLegacy(cfg: Config, store: Store, from: string) {
 async function main() {
   loadEnvFile();
   const a = args();
+  if (a.command === 'copy-db') return copyDb();
   const cfg = loadConfig(process.env);
   configureLog(cfg.logLevel, join(cfg.dev.dataDir, 'app.log'));
   const store = Store.open(cfg.db.url, cfg.db.authToken);
+  try {
+    await runCommand(a, cfg, store);
+  } finally {
+    // The dashboard keeps running; every other command ends here (an open MySQL pool would keep Node alive).
+    if (a.command !== 'dev') await store.close();
+  }
+}
 
+async function runCommand(a: ReturnType<typeof args>, cfg: Config, store: Store) {
   switch (a.command) {
     case 'connect': {
       if (!cfg.upwork.tokenKey) throw new ConfigError('Set TOKEN_ENCRYPTION_KEY in .env first (see .env.example).');
@@ -211,7 +250,7 @@ async function main() {
       return;
     }
     default:
-      out('Commands: connect | discover | import [--from DIR] | filters | search [--filter NAME] | dev [--no-scheduler] | status | purge | disconnect');
+      out('Commands: connect | discover | import [--from DIR] | copy-db | filters | search [--filter NAME] | dev [--no-scheduler] | status | purge | disconnect');
   }
 }
 

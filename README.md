@@ -2,7 +2,7 @@
 
 A small Node.js + TypeScript bot. About every 30 minutes it searches your saved Upwork job filters through the **official Upwork MCP server** (free with any Upwork account, no developer key) and lists every matching job on a password-protected dashboard. Each job appears **once**, even if later searches find it again, and links to the post on Upwork. No scraping.
 
-It runs on **Vercel** (functions + page) with a **Turso** database and a GitHub Actions workflow as the scheduler. **Setup: [DEPLOY.md](DEPLOY.md).**
+It runs on **Hostinger** (a Node.js Web App with a **MySQL** database) at https://upwork.pelicanstechnologies.com. **Setup: [HOSTINGER.md](HOSTINGER.md).** It can still run on **Vercel** with a **Turso** database instead ([DEPLOY.md](DEPLOY.md)).
 
 ## ⚠️ Read this first: Upwork's terms
 
@@ -26,7 +26,7 @@ Other terms the app follows: MCP data is kept at most 30 days (`RETENTION_DAYS`)
 * **Paging:** Upwork returns 10 jobs per page, newest first. A filter's first search reads up to `FIRST_RUN_MAX_PAGES` (10) pages, and so does a catch-up search of a filter last searched more than two intervals ago (the scheduler missed calls), so a long gap does not skip posts. After that, each search reads at least 2 and up to `MAX_PAGES_PER_FILTER` (3) pages, stopping once a page has nothing new. At least 2 pages, because Upwork's order isn't perfectly strict.
 * **Matching:** Upwork applies the keyword and categories. Budget, hourly rate and contract type are re-checked locally, and missing data is *unknown*, never 0. A job is labelled with a filter only if that filter's own search returned it.
 * **Retries:** up to 3 attempts per page with backoff, never sooner than Upwork's `retry_after_seconds`. A longer wait carries over to a later call. An expired sign-in stops the search and shows on the dashboard.
-* **Storage** (`src/db.ts`, libSQL): Turso on Vercel, a local file (`data/local.db`) on your PC.
+* **Storage** (`src/db.ts`): MySQL on Hostinger (`MYSQL_*` settings), Turso on Vercel, a local SQLite file (`data/local.db`) on your PC.
 
 ### How a filter URL maps
 
@@ -54,7 +54,9 @@ With `TURSO_DATABASE_URL` / `TURSO_AUTH_TOKEN` in `.env` these act on the live d
 | `npm run search` | One full search now (`-- --filter "Name"` for one filter) |
 | `npm run filters` | How each filter URL is translated and what is (not) sent to Upwork |
 | `npm run status` / `purge` | Overview / apply retention now |
+| `npm run build:hostinger` / `start` | Build the Hostinger server (`dist/`) / run it |
 | `npm run build` | Build the Vercel output (`.vercel/output`) |
+| `npm run copy-db` | Copy everything from Turso into the MySQL database (see HOSTINGER.md step 6) |
 | `npm test` / `typecheck` | Tests (no network) / TypeScript check |
 
 ## Security

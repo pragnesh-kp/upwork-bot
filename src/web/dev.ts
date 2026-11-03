@@ -9,7 +9,7 @@ import { log } from '../log.ts';
 import { createHandler, SECURITY_HEADERS } from './handler.ts';
 
 const PUBLIC_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'public');
-const ASSETS: Record<string, [string, string]> = {
+export const ASSETS: Record<string, [string, string]> = {
   '/': ['index.html', 'text/html; charset=utf-8'],
   '/index.html': ['index.html', 'text/html; charset=utf-8'],
   '/app.js': ['app.js', 'text/javascript; charset=utf-8'],

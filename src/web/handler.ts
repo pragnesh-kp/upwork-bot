@@ -116,12 +116,17 @@ export function createHandler(deps: HandlerDeps): Handler {
 
   const localHostOk = (req: IncomingMessage): boolean => /^(127\.0\.0\.1|localhost)(:\d+)?$/.test(String(req.headers.host ?? ''));
 
-  /** Origin, when the browser sends one, must be this site. */
+  /**
+   * Origin, when the browser sends one, must be this site. Behind a reverse proxy
+   * (Hostinger) the public host may arrive as X-Forwarded-Host; a browser cannot set
+   * that header on a cross-site request, so accepting it keeps the check sound.
+   */
   const sameOrigin = (req: IncomingMessage): boolean => {
     const origin = req.headers.origin;
     if (!origin) return true;
     try {
-      return new URL(origin).host === req.headers.host;
+      const host = new URL(origin).host;
+      return host === req.headers.host || host === String(req.headers['x-forwarded-host'] ?? '').split(',')[0]?.trim();
     } catch {
       return false;
     }
@@ -199,7 +204,7 @@ export function createHandler(deps: HandlerDeps): Handler {
 
       // --- access control ----------------------------------------------------------
       if (!cfg.dashboardPassword) {
-        if (cfg.onVercel) return send(res, 503, { error: 'Set DASHBOARD_PASSWORD in the Vercel project settings, then redeploy.' });
+        if (cfg.onVercel) return send(res, 503, { error: "Set DASHBOARD_PASSWORD in the hosting settings (Vercel project or Hostinger app's environment variables), then redeploy." });
         if (!localHostOk(req)) return send(res, 421, { error: 'Unexpected Host header' });
       }
       if (req.method === 'POST' && (req.headers['x-requested-with'] !== 'job-alerts' || !sameOrigin(req))) return send(res, 403, { error: 'Forbidden' });
