@@ -3,11 +3,11 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 export interface Config {
-  /** libSQL database: Turso (libsql://…) on Vercel, a local SQLite file otherwise. */
+  /** MySQL (mysql://…) on Hostinger, Turso (libsql://…) on Vercel, a local SQLite file otherwise. */
   db: { url: string; authToken: string | null };
-  /** True on Vercel (VERCEL=1): the dashboard requires a password and a secure cookie. */
+  /** True on Vercel (VERCEL=1) or Hostinger (HOSTED=1): the dashboard requires a password and a secure cookie. */
   onVercel: boolean;
-  /** Dashboard password (DASHBOARD_PASSWORD). Required on Vercel; optional locally. */
+  /** Dashboard password (DASHBOARD_PASSWORD). Required when hosted; optional locally. */
   dashboardPassword: string | null;
   /** Secret the scheduler sends as "Authorization: Bearer <CRON_SECRET>". */
   cronSecret: string | null;
@@ -58,7 +58,7 @@ const str = (env: NodeJS.ProcessEnv, key: string): string | null => env[key]?.tr
  * prefix for the variable names, so besides TURSO_DATABASE_URL any setting whose value
  * is a libsql:// address works, paired with the *AUTH_TOKEN that has the same prefix.
  */
-function tursoSettings(env: NodeJS.ProcessEnv): { url: string | null; token: string | null } {
+export function tursoSettings(env: NodeJS.ProcessEnv): { url: string | null; token: string | null } {
   const keys = Object.keys(env).sort();
   const urlKey = str(env, 'TURSO_DATABASE_URL')
     ? 'TURSO_DATABASE_URL'
@@ -69,6 +69,22 @@ function tursoSettings(env: NodeJS.ProcessEnv): { url: string | null; token: str
     return { url: str(env, urlKey), token: token ?? null };
   }
   return { url: str(env, 'DATABASE_URL'), token: str(env, 'DATABASE_AUTH_TOKEN') };
+}
+
+/**
+ * MySQL settings (Hostinger): MYSQL_HOST, MYSQL_USER, MYSQL_PASSWORD, MYSQL_DATABASE (and
+ * MYSQL_PORT), or one DATABASE_URL=mysql://user:password@host:3306/database. Separate
+ * values need no URL encoding, so a password with @ or # in it just works.
+ */
+export function mysqlUrl(env: NodeJS.ProcessEnv): string | null {
+  const url = str(env, 'DATABASE_URL');
+  if (url && /^mysql:\/\//i.test(url)) return url;
+  const host = str(env, 'MYSQL_HOST');
+  if (!host) return null;
+  const missing = ['MYSQL_USER', 'MYSQL_PASSWORD', 'MYSQL_DATABASE'].filter((k) => !str(env, k));
+  if (missing.length) throw new ConfigError(`MYSQL_HOST is set, but ${missing.join(', ')} ${missing.length > 1 ? 'are' : 'is'} missing`);
+  const e = (k: string) => encodeURIComponent(str(env, k) ?? '');
+  return `mysql://${e('MYSQL_USER')}:${e('MYSQL_PASSWORD')}@${host}:${int(env, 'MYSQL_PORT', 3306, 1, 65535)}/${e('MYSQL_DATABASE')}`;
 }
 
 /** Validates configuration. Error messages never include secret values. */
@@ -86,21 +102,23 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const level = (str(env, 'LOG_LEVEL') ?? 'info') as Config['logLevel'];
   if (!['debug', 'info', 'warn', 'error'].includes(level)) throw new ConfigError('LOG_LEVEL must be debug, info, warn or error');
 
-  const onVercel = !!str(env, 'VERCEL');
+  const onVercel = !!str(env, 'VERCEL') || !!str(env, 'HOSTED');
   const dataDir = resolve(str(env, 'DATA_DIR') ?? 'data');
-  const turso = tursoSettings(env);
-  const dbUrl = turso.url ?? (onVercel ? null : pathToFileURL(resolve(dataDir, 'local.db')).href);
+  const mysql = mysqlUrl(env);
+  const turso = mysql ? { url: null, token: null } : tursoSettings(env);
+  const dbUrl = mysql ?? turso.url ?? (onVercel ? null : pathToFileURL(resolve(dataDir, 'local.db')).href);
   if (!dbUrl) {
     // Names only (never values), to spot a misnamed setting or a deployment made before the settings existed.
     const seen = Object.keys(env)
-      .filter((k) => /TURSO|LIBSQL|DATABASE|STORAGE|_URL$|TOKEN|DASHBOARD|CRON|UPWORK/i.test(k) && !k.startsWith('VERCEL') && str(env, k))
+      .filter((k) => /TURSO|LIBSQL|DATABASE|MYSQL|STORAGE|_URL$|TOKEN|DASHBOARD|CRON|UPWORK/i.test(k) && !k.startsWith('VERCEL') && str(env, k))
       .sort();
     const version = str(env, 'VERCEL_GIT_COMMIT_SHA')?.slice(0, 7);
-    throw new ConfigError(
-      `TURSO_DATABASE_URL is not set. In Vercel: connect a Turso database to this project (Storage), then Redeploy (see DEPLOY.md, steps 3-4). Settings this deployment can see: ${seen.length ? seen.join(', ') : 'none'}.${version ? ` (code version ${version})` : ''}`,
-    );
+    const what = str(env, 'VERCEL')
+      ? 'TURSO_DATABASE_URL is not set. In Vercel: connect a Turso database to this project (Storage), then Redeploy (see DEPLOY.md, steps 3-4).'
+      : "No database is set. On Hostinger: add MYSQL_HOST, MYSQL_USER, MYSQL_PASSWORD and MYSQL_DATABASE to the app's environment variables, then redeploy (see HOSTINGER.md).";
+    throw new ConfigError(`${what} Settings this deployment can see: ${seen.length ? seen.join(', ') : 'none'}.${version ? ` (code version ${version})` : ''}`);
   }
-  if (!/^(libsql|https?|wss?|file):/.test(dbUrl)) throw new ConfigError('TURSO_DATABASE_URL must start with libsql://, https:// or file:');
+  if (!/^(libsql|https?|wss?|file|mysql):/i.test(dbUrl)) throw new ConfigError('TURSO_DATABASE_URL must start with libsql://, https:// or file:');
 
   const password = str(env, 'DASHBOARD_PASSWORD');
   if (password && password.length < 10) throw new ConfigError('DASHBOARD_PASSWORD must be at least 10 characters');

@@ -14,6 +14,20 @@ test('finds Turso settings, including names prefixed by the Vercel integration',
   assert.deepEqual(customDb.db, { url: 'libsql://d.turso.io', authToken: 't4' });
 });
 
+test('MySQL settings (Hostinger) win over Turso; special characters in the password survive', () => {
+  const env = { HOSTED: '1', MYSQL_HOST: 'localhost', MYSQL_USER: 'u1_bot', MYSQL_PASSWORD: 'P@ss#w0rd:/x', MYSQL_DATABASE: 'u1_upwork', TURSO_DATABASE_URL: 'libsql://a.turso.io' };
+  const cfg = loadConfig(env as NodeJS.ProcessEnv);
+  assert.equal(cfg.onVercel, true);
+  assert.equal(cfg.db.authToken, null);
+  const u = new URL(cfg.db.url);
+  assert.equal(u.protocol, 'mysql:');
+  assert.deepEqual([u.hostname, u.port, decodeURIComponent(u.username), decodeURIComponent(u.password), u.pathname], ['localhost', '3306', 'u1_bot', 'P@ss#w0rd:/x', '/u1_upwork']);
+  assert.equal(loadConfig({ DATABASE_URL: 'mysql://a:b@h:3307/d' } as NodeJS.ProcessEnv).db.url, 'mysql://a:b@h:3307/d');
+  assert.throws(() => loadConfig({ MYSQL_HOST: 'localhost', MYSQL_USER: 'u' } as NodeJS.ProcessEnv), /MYSQL_PASSWORD, MYSQL_DATABASE are missing/);
+  // Hosted without any database: says what to set on Hostinger.
+  assert.throws(() => loadConfig({ HOSTED: '1' } as NodeJS.ProcessEnv), /On Hostinger: add MYSQL_HOST/);
+});
+
 test('on Vercel a missing database names the related settings it found, never their values', () => {
   assert.throws(() => loadConfig({ VERCEL: '1', MY_DATABASE_URI: 'secret-value' } as NodeJS.ProcessEnv), (err: Error) => {
     assert.match(err.message, /TURSO_DATABASE_URL is not set/);
