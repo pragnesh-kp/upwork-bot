@@ -637,7 +637,8 @@ async function start() {
   try {
     await refresh();
   } catch (err) {
-    if (!(err instanceof LoginRequired)) showRunResult(null, err.message);
+    // The dashboard is still hidden here, so say what is wrong (e.g. a server setting) in a popup.
+    if (!(err instanceof LoginRequired)) showError(err.message);
     return;
   }
   $('login').hidden = true;
