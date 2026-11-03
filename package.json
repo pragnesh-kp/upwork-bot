@@ -19,7 +19,7 @@
   },
   "scripts": {
     "dev": "node --disable-warning=ExperimentalWarning src/cli.ts dev",
-    "build": "node scripts/build-vercel.mjs",
+    "build": "node scripts/build-vercel.mjs && node scripts/build-hostinger.mjs",
     "build:hostinger": "node scripts/build-hostinger.mjs",
     "start": "node dist/server.mjs",
     "connect": "node --disable-warning=ExperimentalWarning src/cli.ts connect",

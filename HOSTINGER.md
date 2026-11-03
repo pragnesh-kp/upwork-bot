@@ -54,7 +54,7 @@ hPanel → **Websites → Add website → Node.js Apps → Import Git repository
    | Framework | Other / Express |
    | Node.js version | **22.x** |
    | Install command | `npm ci` |
-   | Build command | `npm run build:hostinger` (**not** `npm run build`, which is for Vercel) |
+   | Build command | `npm run build:hostinger` (`npm run build` also works: it builds both the Vercel and the Hostinger version) |
    | Output directory | `dist` |
    | Entry file / start | `dist/server.mjs` (start command `npm start` does the same) |
 
@@ -146,7 +146,7 @@ The server already starts due searches every 5 minutes. Add an outside caller to
 | `MySQL refused MYSQL_USER / MYSQL_PASSWORD` | Retype the password. In hPanel check that the user belongs to the database. Use the full `u…_` names. |
 | `MYSQL_DATABASE does not exist` | Use the full name from hPanel, e.g. `u123456789_upwork`. |
 | `Set DASHBOARD_PASSWORD…` | Add `DASHBOARD_PASSWORD` (10+ characters), then Redeploy. |
-| Build fails at `npm run build` / Vercel output | The build command must be `npm run build:hostinger`. |
+| `Entry file not found` | Entry file must be `dist/server.mjs`, and the build log must show `Built dist/server.mjs`. |
 | Login works but buttons answer `Forbidden` | Open the site through `https://upwork.pelicanstechnologies.com`, not an internal preview address. |
 | `Cannot decrypt the stored Upwork sign-in` | `TOKEN_ENCRYPTION_KEY` differs from the one used before. Set the old value, or press **Reconnect Upwork**. |
 | cron-job.org gets `401` | Its `Authorization` header must be `Bearer ` + the exact `CRON_SECRET`. |
