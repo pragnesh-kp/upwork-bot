@@ -2,7 +2,7 @@
 
 A small Node.js + TypeScript bot. About every 30 minutes it searches your saved Upwork job filters through the **official Upwork MCP server** (free with any Upwork account, no developer key) and lists every matching job on a password-protected dashboard. Each job appears **once**, even if later searches find it again, and links to the post on Upwork. No scraping.
 
-It runs on **Hostinger** (a Node.js Web App with a **MySQL** database) at https://upwork.pelicanstechnologies.com. **Setup: [HOSTINGER.md](HOSTINGER.md).** It can still run on **Vercel** with a **Turso** database instead ([DEPLOY.md](DEPLOY.md)).
+It runs on **Hostinger** (a Node.js Web App with a **MySQL** database) at https://upwork.pelicanstechnology.com. **Setup: [HOSTINGER.md](HOSTINGER.md).** It can still run on **Vercel** with a **Turso** database instead ([DEPLOY.md](DEPLOY.md)).
 
 ## ⚠️ Read this first: Upwork's terms
 

@@ -1,9 +1,9 @@
-# Deploying on Hostinger (upwork.pelicanstechnologies.com)
+# Deploying on Hostinger (upwork.pelicanstechnology.com)
 
-The dashboard and the searches run as a **Node.js Web App** on Hostinger. The data lives in a **MySQL database** in the same Hostinger account. The site is **https://upwork.pelicanstechnologies.com**.
+The dashboard and the searches run as a **Node.js Web App** on Hostinger. The data lives in a **MySQL database** in the same Hostinger account. The site is **https://upwork.pelicanstechnology.com**.
 
 ```
-your browser ──password──▶ https://upwork.pelicanstechnologies.com ─┐
+your browser ──password──▶ https://upwork.pelicanstechnology.com ─┐
 cron-job.org ─every 5 min─▶ …/api/cron (backup)                      ├─ Node.js app (dist/server.mjs) ─▶ MySQL (localhost)
 the app itself ─every 5 min─▶ starts searches that are due           ┘                                 └▶ Upwork MCP (official)
 ```
@@ -18,7 +18,7 @@ Node.js apps need **Business Web Hosting** or a **Cloud** plan (Startup, Profess
 
 ## 1. Create the MySQL database
 
-hPanel → **Websites** → *pelicanstechnologies.com* → **Dashboard** → **Databases → Management** (MySQL Databases):
+hPanel → **Websites** → *pelicanstechnology.com* → **Dashboard** → **Databases → Management** (MySQL Databases):
 
 1. **Database name:** `upwork`, **user:** `upwork`, and a **strong password** (16+ characters; the generator is fine). Click **Create**.
 2. Write down the **full names** hPanel shows. They carry your account prefix, e.g. `u123456789_upwork` for both.
@@ -36,17 +36,17 @@ The app creates its tables itself on first start. You don't need to import anyth
 
 ## 3. The subdomain
 
-The app must be attached to `upwork.pelicanstechnologies.com` **when you create it** (step 4).
+The app must be attached to `upwork.pelicanstechnology.com` **when you create it** (step 4).
 
 * You already created the subdomain in hPanel. If step 4 says the domain is already in use, delete the empty subdomain (hPanel → **Domains → Subdomains**, or the site's **Subdomains** page), then pick it again in step 4.
-* DNS: if you followed the old Vercel guide and added a **CNAME `upwork` → `cname.vercel-dns.com`**, delete it (hPanel → **Domains → pelicanstechnologies.com → DNS / Nameservers**). If the domain uses Hostinger's nameservers, hPanel adds the right record itself.
+* DNS: if you followed the old Vercel guide and added a **CNAME `upwork` → `cname.vercel-dns.com`**, delete it (hPanel → **Domains → pelicanstechnology.com → DNS / Nameservers**). If the domain uses Hostinger's nameservers, hPanel adds the right record itself.
 
 ## 4. Create the Node.js app
 
 hPanel → **Websites → Add website → Node.js Apps → Import Git repository**:
 
 1. Connect GitHub and pick **pragnesh-kp/upwork-bot**, branch **main**.
-2. Domain: **upwork.pelicanstechnologies.com**.
+2. Domain: **upwork.pelicanstechnology.com**.
 3. Build settings (**override** what Hostinger detects):
 
    | Setting | Value |
@@ -76,7 +76,7 @@ hPanel → **Websites → Add website → Node.js Apps → Import Git repository
 
 5. **Deploy.** The build log should end with `Built dist/server.mjs`.
 
-Open https://upwork.pelicanstechnologies.com: you should see the login page. If HTTPS isn't active yet, hPanel → **Security → SSL** → install the free certificate for the subdomain (it can take a few minutes).
+Open https://upwork.pelicanstechnology.com: you should see the login page. If HTTPS isn't active yet, hPanel → **Security → SSL** → install the free certificate for the subdomain (it can take a few minutes).
 
 If the page shows an error such as `MySQL refused MYSQL_USER / MYSQL_PASSWORD…` or `MYSQL_DATABASE does not exist…`, fix that environment variable and redeploy.
 
@@ -119,14 +119,31 @@ Log in, press **Connect Upwork**, then add your searches with **+ Add filter**. 
 
 ## 7. Log in
 
-Open **https://upwork.pelicanstechnologies.com** and enter `DASHBOARD_PASSWORD`. With option B you should see your filters and jobs, and *Upwork connected as …*. Press **Search now** once to check that the Upwork sign-in works.
+Open **https://upwork.pelicanstechnology.com** and enter `DASHBOARD_PASSWORD`. With option B you should see your filters and jobs, and *Upwork connected as …*. Press **Search now** once to check that the Upwork sign-in works.
 
-## 8. Backup scheduler
+## 8. Scheduler: search every 30 minutes
 
-The server already starts due searches every 5 minutes. Add an outside caller too, in case Hostinger restarts or idles the app:
+Each filter is searched again **30 minutes** (`SEARCH_INTERVAL_MINUTES`) after its previous search. Something has to call `/api/cron` to start it. A call when nothing is due does nothing (no Upwork request), so calling often is harmless. The server also checks every 5 minutes by itself, but Hostinger may stop an idle app, so add a caller.
 
-* **cron-job.org**: edit the existing job (or create one). URL `https://upwork.pelicanstechnologies.com/api/cron`, every 5 minutes, header `Authorization: Bearer <CRON_SECRET>`, timeout 30 s. **Test run** should answer `{"status":"idle"}` (or `finished` / `continued`).
-* **GitHub Actions** (optional): the workflow now calls `https://upwork.pelicanstechnologies.com`. Update the repository secret `CRON_SECRET` (GitHub → Settings → Secrets and variables → Actions) to the value from step 2.
+### 8a. Hostinger Cron Jobs (main caller)
+
+hPanel → **Websites** → *pelicanstechnology.com* → **Advanced → Cron Jobs** → **Custom**:
+
+* **Command** (put your `CRON_SECRET` after `Bearer `):
+
+  ```
+  curl -s -m 60 -H "Authorization: Bearer YOUR_CRON_SECRET" https://upwork.pelicanstechnology.com/api/cron
+  ```
+
+* **Schedule:** every 5 minutes (`*/5 * * * *`). Every 30 minutes (`*/30 * * * *`) also works. A search that you start by hand with **Search now** then waits for the next 30-minute mark, so a filter can go up to an hour between searches.
+* Save. After a few minutes, **View output** next to the cron job should show `{"status":"idle"}`, `{"status":"finished",…}` or `{"status":"continued",…}`. `{"error":"Unauthorized"}` means the secret differs from the app's `CRON_SECRET`.
+
+The dashboard's **Insights** tab shows every scan, and the top line warns when the scheduler hasn't called for over 60 minutes.
+
+### 8b. Backups (optional)
+
+* **cron-job.org**: URL `https://upwork.pelicanstechnology.com/api/cron`, every 5 minutes, header `Authorization: Bearer <CRON_SECRET>`, timeout 30 s. If you have an old job calling the `vercel.app` address, **change or delete it** (see step 5).
+* **GitHub Actions**: the workflow calls `https://upwork.pelicanstechnology.com`. Set the repository secret `CRON_SECRET` (GitHub → Settings → Secrets and variables → Actions) to the same value. GitHub skips many scheduled runs, so it is a backup only.
 
 ## Everyday
 
@@ -147,13 +164,13 @@ The server already starts due searches every 5 minutes. Add an outside caller to
 | `MYSQL_DATABASE does not exist` | Use the full name from hPanel, e.g. `u123456789_upwork`. |
 | `Set DASHBOARD_PASSWORD…` | Add `DASHBOARD_PASSWORD` (10+ characters), then Redeploy. |
 | `Entry file not found` | Entry file must be `dist/server.mjs`, and the build log must show `Built dist/server.mjs`. |
-| Login works but buttons answer `Forbidden` | Open the site through `https://upwork.pelicanstechnologies.com`, not an internal preview address. |
+| Login works but buttons answer `Forbidden` | Open the site through `https://upwork.pelicanstechnology.com`, not an internal preview address. |
 | `Cannot decrypt the stored Upwork sign-in` | `TOKEN_ENCRYPTION_KEY` differs from the one used before. Set the old value, or press **Reconnect Upwork**. |
 | cron-job.org gets `401` | Its `Authorization` header must be `Bearer ` + the exact `CRON_SECRET`. |
 
 ## Alternative: Hostinger VPS
 
-On a VPS (Ubuntu): install Node 22 and MySQL/MariaDB, create the database and user, clone the repository, then `npm ci && npm run build:hostinger`. Put the environment variables from step 4 in a `.env` file next to `package.json`, and run `node dist/server.mjs` under pm2 or systemd with `PORT=3000`. Put nginx in front for `upwork.pelicanstechnologies.com` with a Let's Encrypt certificate, and point an **A** record `upwork` to the VPS IP.
+On a VPS (Ubuntu): install Node 22 and MySQL/MariaDB, create the database and user, clone the repository, then `npm ci && npm run build:hostinger`. Put the environment variables from step 4 in a `.env` file next to `package.json`, and run `node dist/server.mjs` under pm2 or systemd with `PORT=3000`. Put nginx in front for `upwork.pelicanstechnology.com` with a Let's Encrypt certificate, and point an **A** record `upwork` to the VPS IP.
 
 ## Notes
 

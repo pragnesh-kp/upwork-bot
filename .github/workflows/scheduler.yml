@@ -9,7 +9,7 @@ name: Scheduler
 #
 # GitHub drops many scheduled runs when it is busy (on 29 Oct 2026 only 6 of 48 ran), worst at
 # :00 and :30. So it asks every 10 minutes at odd minutes; a call when nothing is due does nothing.
-# For dependable scans also add an external caller (cron-job.org), see DEPLOY.md step 6.
+# The main caller is a Hostinger Cron Job, see HOSTINGER.md step 8.
 
 on:
   schedule:
@@ -30,7 +30,7 @@ jobs:
       - name: Call /api/cron
         env:
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
-          APP_URL: https://upwork.pelicanstechnologies.com
+          APP_URL: https://upwork.pelicanstechnology.com
         run: |
           if [ -z "$CRON_SECRET" ]; then
             echo "::error::Add the repository secret CRON_SECRET (Settings → Secrets and variables → Actions), same value as on the server (Hostinger)."
