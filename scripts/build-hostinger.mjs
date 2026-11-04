@@ -4,9 +4,11 @@
 // so it runs even where only the output directory is kept, with no node_modules.
 import { build } from 'esbuild';
 import { cpSync, rmSync } from 'node:fs';
+import { stampAssets } from './stamp-assets.mjs';
 
 rmSync('dist', { recursive: true, force: true });
 cpSync('public', 'dist/public', { recursive: true });
+stampAssets('dist/public');
 const result = await build({
   entryPoints: ['src/web/server.ts'],
   bundle: true,

@@ -2,7 +2,8 @@
 // Vercel runs this as the project's build command ("npm run build", see vercel.json).
 import { build } from 'esbuild';
 import { cpSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
+import { stampAssets } from './stamp-assets.mjs';
 
 const OUT = '.vercel/output';
 const ROUTES = ['api/login', 'api/logout', 'api/state', 'api/jobs', 'api/search', 'api/step', 'api/filters', 'api/cron', 'api/upwork/connect', 'api/upwork/finish', 'api/insights'];
@@ -19,7 +20,9 @@ const SECURITY_HEADERS = {
 
 rmSync(OUT, { recursive: true, force: true });
 mkdirSync(join(OUT, 'static'), { recursive: true });
-cpSync('public', join(OUT, 'static'), { recursive: true });
+// .htaccess is for Hostinger only; Vercel would publish it as a file.
+cpSync('public', join(OUT, 'static'), { recursive: true, filter: (src) => basename(src) !== '.htaccess' });
+stampAssets(join(OUT, 'static'));
 
 const bundle = join(OUT, 'bundle.tmp.js');
 const result = await build({

@@ -97,24 +97,29 @@ async function api(path, body) {
   return data;
 }
 
-/** The loading screen: shown until the first answer, with a note when the server is slow to wake up. */
+/**
+ * The loading screen: shown until the first answer, with a note when the server is slow to wake up.
+ * A browser may still hold an older index.html without it, so every use checks that it exists.
+ */
+const bootShown = () => !!$('boot') && !$('boot').hidden;
 const boot = {
   slowTimer: setTimeout(() => {
-    if (!$('boot').hidden) $('boot-msg').textContent = 'Waking up the server… this can take a few seconds.';
+    if (bootShown()) $('boot-msg').textContent = 'Waking up the server… this can take a few seconds.';
   }, 2500),
   hide() {
     clearTimeout(this.slowTimer);
-    $('boot').hidden = true;
+    if ($('boot')) $('boot').hidden = true;
   },
   fail(message) {
     clearTimeout(this.slowTimer);
+    if (!$('boot')) return void showError(message);
     $('boot').hidden = false;
     $('boot').querySelector('.boot-box').classList.add('failed');
     $('boot-msg').textContent = message;
     $('boot-retry').hidden = false;
   },
 };
-$('boot-retry').addEventListener('click', () => {
+$('boot-retry')?.addEventListener('click', () => {
   $('boot').querySelector('.boot-box').classList.remove('failed');
   $('boot-msg').textContent = 'Loading…';
   $('boot-retry').hidden = true;
@@ -725,10 +730,10 @@ function showNotice(text, isError = false) {
 
 /** Log in button and field: disabled with a spinner while busy, so a second Enter does nothing. */
 function setLoginBusy(busy, label = 'Log in') {
-  const btn = $('login-btn');
+  const btn = $('login-form').querySelector('button[type="submit"]');
   btn.disabled = busy;
   btn.classList.toggle('busy', busy);
-  btn.querySelector('.btn-label').textContent = label;
+  (btn.querySelector('.btn-label') || btn).textContent = label;
   $('password').readOnly = busy;
 }
 
@@ -776,7 +781,7 @@ $('login-form').addEventListener('submit', async (e) => {
   }
 });
 $('password').addEventListener('input', () => $('password').removeAttribute('aria-invalid'));
-$('pw-toggle').addEventListener('click', () => {
+$('pw-toggle')?.addEventListener('click', () => {
   const input = $('password');
   const show = input.type === 'password';
   input.type = show ? 'text' : 'password';
@@ -797,7 +802,7 @@ async function start() {
   } catch (err) {
     if (err instanceof LoginRequired) return;
     // Still on the loading screen: say what is wrong there, with a "Try again" button.
-    if (!$('boot').hidden) boot.fail(err.message);
+    if (bootShown() || ($('login').hidden && $('app').hidden)) boot.fail(err.message);
     else throw err; // from the login form, which shows it
     return;
   }

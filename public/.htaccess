@@ -1,0 +1,7 @@
+# Hostinger (LiteSpeed) serves these files itself. Browsers must check for a newer copy on
+# every visit (a cheap "not modified" answer when nothing changed), so a deploy shows at once.
+<IfModule mod_headers.c>
+  <FilesMatch "\.(html|css|js|svg)$">
+    Header set Cache-Control "no-cache"
+  </FilesMatch>
+</IfModule>
