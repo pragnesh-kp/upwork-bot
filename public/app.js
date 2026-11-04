@@ -49,11 +49,45 @@ $('modal').addEventListener('click', (e) => { if (e.target === $('modal')) $('mo
 
 class LoginRequired extends Error {}
 
+/** Reads give up after this long (the server may be waking up); changes may run a search, so they wait longer. */
+const GET_TIMEOUT_MS = 30000;
+const POST_TIMEOUT_MS = 90000;
+const sleep = (ms) => new Promise((ok) => setTimeout(ok, ms));
+
+/** One request with a time limit; a network failure or timeout becomes a readable error. */
+async function request(path, init, timeoutMs) {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), timeoutMs);
+  try {
+    return await fetch(path, { ...init, signal: ctl.signal });
+  } catch {
+    const e = new Error(ctl.signal.aborted
+      ? 'The server took too long to answer. Please try again.'
+      : "Can't reach the server. Check your internet connection and try again.");
+    e.network = true;
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function api(path, body) {
-  const res = await fetch(path, body === undefined
-    ? { cache: 'no-store', credentials: 'same-origin' }
+  const post = body !== undefined;
+  const init = post
     // The custom header is required by the server for every change (other sites cannot send it).
-    : { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-requested-with': 'job-alerts' }, body: JSON.stringify(body) });
+    ? { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-requested-with': 'job-alerts' }, body: JSON.stringify(body) }
+    : { cache: 'no-store', credentials: 'same-origin' };
+  // Reads are retried while the host is starting the app (network error, 502/503/504).
+  let res;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      res = await request(path, init, post ? POST_TIMEOUT_MS : GET_TIMEOUT_MS);
+      if (post || attempt >= 2 || ![502, 503, 504].includes(res.status)) break;
+    } catch (err) {
+      if (post || attempt >= 2) throw err;
+    }
+    await sleep(1500 * (attempt + 1));
+  }
   const data = await res.json().catch(() => ({}));
   if (res.status === 401 && data.loginRequired) {
     showLogin();
@@ -63,7 +97,32 @@ async function api(path, body) {
   return data;
 }
 
+/** The loading screen: shown until the first answer, with a note when the server is slow to wake up. */
+const boot = {
+  slowTimer: setTimeout(() => {
+    if (!$('boot').hidden) $('boot-msg').textContent = 'Waking up the server… this can take a few seconds.';
+  }, 2500),
+  hide() {
+    clearTimeout(this.slowTimer);
+    $('boot').hidden = true;
+  },
+  fail(message) {
+    clearTimeout(this.slowTimer);
+    $('boot').hidden = false;
+    $('boot').querySelector('.boot-box').classList.add('failed');
+    $('boot-msg').textContent = message;
+    $('boot-retry').hidden = false;
+  },
+};
+$('boot-retry').addEventListener('click', () => {
+  $('boot').querySelector('.boot-box').classList.remove('failed');
+  $('boot-msg').textContent = 'Loading…';
+  $('boot-retry').hidden = true;
+  start();
+});
+
 function showLogin() {
+  boot.hide();
   $('app').hidden = true;
   $('login').hidden = false;
   $('password').focus();
@@ -154,7 +213,12 @@ function renderSchedule(s) {
   // The Jobs / Insights switch sits in this row, right after the status cards (same node, so its clicks keep working).
   box.append(VIEW_TABS);
   // The external scheduler should call every 30 minutes; warn when it has gone quiet.
-  if (!call) line('⚠ Scheduler:', 'has never called /api/cron. Scans only run while this page is open (see DEPLOY.md, step 6).', 'warn');
+  if (sc.selfScheduling) {
+    // The server searches by itself; an outside call (Hostinger Cron Job) only keeps it awake.
+    if (!call) line('⚠ Keep-awake:', 'no wake-up call yet. Add the Hostinger Cron Job (HOSTINGER.md, step 8) so scans keep running while this page is closed.', 'warn');
+    else if (quiet) line('⚠ Keep-awake:', `last wake-up call ${when(call)} (${ago(call)}). Check the Hostinger Cron Job (HOSTINGER.md, step 8); scans may stop while this page is closed.`, 'warn');
+    else line('Scheduler:', `built in · checked ${ago(call)}`);
+  } else if (!call) line('⚠ Scheduler:', 'has never called /api/cron. Scans only run while this page is open (see DEPLOY.md, step 6).', 'warn');
   else if (quiet) line('⚠ Scheduler:', `last called ${when(call)} (${ago(call)}). Check the Scheduler workflow on GitHub (Actions tab); scans only run while this page is open.`, 'warn');
   else line('Scheduler:', `last called ${ago(call)}`);
   const stopped = s.lastRun?.summary?.stoppedEarly;
@@ -244,11 +308,31 @@ function renderState(s) {
   // forward itself instead of waiting for the scheduler, and refreshes so its jobs show up. It also
   // starts scans that are due, so they run on time while the page is open even without the scheduler.
   const due = s.schedule.nextDueAt && Date.parse(s.schedule.nextDueAt) <= Date.now();
-  if (s.running) pushSearch();
+  if (s.schedule.selfScheduling) {
+    // The server runs the search in the background: watch it closely while it runs.
+    if (searchAskedAt && Date.now() - searchAskedAt > 10 * 60000) searchAskedAt = 0;
+    if (searchAskedAt && !s.running && s.lastRun?.finishedAt && Date.parse(s.lastRun.finishedAt) >= searchAskedAt) {
+      searchAskedAt = 0;
+      if (s.lastRun.summary) showRunResult(s.lastRun.summary);
+    }
+    if (s.running || searchAskedAt) watchSoon();
+  } else if (s.running) pushSearch();
   else if (due && Date.now() - lastDuePush > 60000) {
     lastDuePush = Date.now();
     pushSearch();
   }
+}
+
+/** When this page asked for a search that runs in the background (0: none pending). */
+let searchAskedAt = 0;
+let watchTimer = null;
+/** Refreshes again in a few seconds while a background search runs. */
+function watchSoon() {
+  if (watchTimer) return;
+  watchTimer = setTimeout(() => {
+    watchTimer = null;
+    refresh().catch(() => {});
+  }, 3000);
 }
 
 let pushing = false;
@@ -450,20 +534,40 @@ function renderJobs(jobs) {
 }
 
 let loadSeq = 0;
-async function loadJobs() {
+/** The jobs for the current filter and tab, or null when a newer request superseded this one. */
+async function fetchJobs() {
   const p = new URLSearchParams();
   if (view.filter) p.set('filter', view.filter);
   if (view.state) p.set('state', view.state);
   const seq = ++loadSeq;
   const { jobs } = await api(`/api/jobs?${p}`);
-  if (seq !== loadSeq) return; // a newer request superseded this one
+  return seq === loadSeq ? jobs : null;
+}
+
+async function loadJobs() {
+  // Switching filter or tab: say so at once instead of showing the old list.
+  if (!loadedJobs.length) {
+    const box = el('div', { class: 'loading' });
+    box.append(el('span', { class: 'spinner', role: 'status', 'aria-label': 'Loading jobs' }));
+    $('jobs').replaceChildren(box);
+  }
+  const jobs = await fetchJobs();
+  if (!jobs) return;
   loadedJobs = jobs;
   applyView();
 }
 
+/** State and jobs are fetched at the same time (they don't depend on each other). */
 async function refresh() {
-  renderState(await api('/api/state'));
-  await loadJobs();
+  const filterBefore = view.filter;
+  const [s, jobs] = await Promise.all([api('/api/state'), fetchJobs()]);
+  renderState(s);
+  // The remembered filter was removed meanwhile: renderState switched to "All filters".
+  if (view.filter !== filterBefore) return loadJobs();
+  if (jobs) {
+    loadedJobs = jobs;
+    applyView();
+  }
 }
 
 function showRunResult(summary, error) {
@@ -502,9 +606,14 @@ $('run').addEventListener('click', async () => {
   const btn = $('run');
   btn.disabled = true;
   btn.textContent = 'Searching…';
+  const askedAt = Date.now();
   try {
     const r = await api('/api/search', { filter: view.filter || null });
-    if (r.status === 'finished') showRunResult(r.summary);
+    if (r.status === 'started') {
+      // Runs on the server; the results show here when it finishes (this page keeps watching).
+      searchAskedAt = askedAt;
+      showNotice(`Searching Upwork${view.filter ? ` for "${view.filter}"` : ''}… new jobs appear here as they are found.`);
+    } else if (r.status === 'finished') showRunResult(r.summary);
     else if (r.status === 'busy') showRunResult(null, 'Another search is running; yours is queued and starts right after it.');
   } catch (err) {
     if (!(err instanceof LoginRequired)) showRunResult(null, err.message);
@@ -614,18 +723,67 @@ function showNotice(text, isError = false) {
   addCloseButton(box);
 }
 
+/** Log in button and field: disabled with a spinner while busy, so a second Enter does nothing. */
+function setLoginBusy(busy, label = 'Log in') {
+  const btn = $('login-btn');
+  btn.disabled = busy;
+  btn.classList.toggle('busy', busy);
+  btn.querySelector('.btn-label').textContent = label;
+  $('password').readOnly = busy;
+}
+
+function loginMessage(text, ok = false) {
+  const msg = $('login-msg');
+  msg.hidden = !text;
+  msg.textContent = text || '';
+  msg.className = `login-msg${ok ? ' ok' : ''}`;
+}
+
+let loggingIn = false;
 $('login-form').addEventListener('submit', async (e) => {
   e.preventDefault();
-  const msg = $('login-msg');
-  msg.hidden = true;
-  try {
-    await api('/api/login', { password: $('password').value });
-    $('password').value = '';
-    start();
-  } catch (err) {
-    msg.hidden = false;
-    msg.textContent = err.message;
+  if (loggingIn) return;
+  const input = $('password');
+  if (!input.value) {
+    loginMessage('Enter your password.');
+    input.focus();
+    return;
   }
+  loggingIn = true;
+  input.removeAttribute('aria-invalid');
+  loginMessage('');
+  setLoginBusy(true, 'Checking password…');
+  try {
+    await api('/api/login', { password: input.value });
+    input.value = '';
+    loginMessage('Password correct. Loading your jobs…', true);
+    setLoginBusy(true, 'Loading…');
+    await start();
+    // Still on the login page after a correct password: the browser dropped the session cookie.
+    if ($('app').hidden) loginMessage('The password is right, but this browser did not keep the login. Allow cookies for this site, then try again.');
+  } catch (err) {
+    const box = $('login-form');
+    const wrong = /wrong password/i.test(err.message);
+    loginMessage(wrong ? 'Wrong password. Please try again.' : err.message);
+    if (wrong) input.setAttribute('aria-invalid', 'true');
+    box.classList.remove('shake');
+    void box.offsetWidth; // restart the animation
+    box.classList.add('shake');
+    input.select();
+  } finally {
+    loggingIn = false;
+    setLoginBusy(false);
+  }
+});
+$('password').addEventListener('input', () => $('password').removeAttribute('aria-invalid'));
+$('pw-toggle').addEventListener('click', () => {
+  const input = $('password');
+  const show = input.type === 'password';
+  input.type = show ? 'text' : 'password';
+  $('pw-toggle').setAttribute('aria-pressed', String(show));
+  $('pw-toggle').setAttribute('aria-label', show ? 'Hide password' : 'Show password');
+  $('pw-toggle').title = show ? 'Hide password' : 'Show password';
+  input.focus();
 });
 $('logout').addEventListener('click', async () => {
   await api('/api/logout', {}).catch(() => {});
@@ -637,16 +795,22 @@ async function start() {
   try {
     await refresh();
   } catch (err) {
-    // The dashboard is still hidden here, so say what is wrong (e.g. a server setting) in a popup.
-    if (!(err instanceof LoginRequired)) showError(err.message);
+    if (err instanceof LoginRequired) return;
+    // Still on the loading screen: say what is wrong there, with a "Try again" button.
+    if (!$('boot').hidden) boot.fail(err.message);
+    else throw err; // from the login form, which shows it
     return;
   }
+  boot.hide();
   $('login').hidden = true;
+  loginMessage('');
   $('app').hidden = false;
   $('logout').hidden = false;
   if (!started) {
     started = true;
-    setInterval(() => refresh().catch(() => {}), 30000);
+    // Every 30 seconds while the page is in view; at once when it comes back into view.
+    setInterval(() => { if (!document.hidden) refresh().catch(() => {}); }, 30000);
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh().catch(() => {}); });
   }
 }
 start();

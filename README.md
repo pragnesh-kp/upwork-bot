@@ -62,7 +62,7 @@ With `TURSO_DATABASE_URL` / `TURSO_AUTH_TOKEN` in `.env` these act on the live d
 ## Security
 
 * The dashboard needs `DASHBOARD_PASSWORD` (required on Vercel). Sessions use a signed, HttpOnly, SameSite=Strict cookie, and repeated wrong passwords are blocked per IP for 15 minutes. Every change also needs a custom request header that other websites can't send.
-* `/api/cron` only accepts `Authorization: Bearer <CRON_SECRET>`.
+* `/api/cron` only accepts `Authorization: Bearer <CRON_SECRET>`. On the always-on server (Hostinger), `/api/ping` needs no secret: it only keeps the app awake and starts searches that are already due.
 * The Upwork sign-in is AES-256-GCM encrypted with `TOKEN_ENCRYPTION_KEY` before it's stored. Upwork grants connected apps **full account scopes**; this app only calls the read-only tools listed above.
 * Job content is shown as text only, and only `https://*.upwork.com` links are kept. Strict security headers (CSP, no framing).
 * `.env`, `filters.json` and `data/` are git-ignored. Keep the repo private.

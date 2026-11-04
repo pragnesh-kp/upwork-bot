@@ -2,7 +2,7 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Config } from '../config.ts';
 import type { Store } from '../db.ts';
-import { continueSearch, filterSchedules, getCycle, hasPendingWork, progressOf, requestSearch, step, tick, type EngineDeps } from '../engine.ts';
+import { continueSearch, getCycle, hasPendingWork, progressOf, requestSearch, schedulesOf, step, tick, type EngineDeps } from '../engine.ts';
 import { defaultFilterName, filterProblems, MAX_FILTERS, parseUpworkSearchUrl, toFilterDefs } from '../filters.ts';
 import { log } from '../log.ts';
 import { buildInsights, MAX_TREND_DAYS } from '../insights.ts';
@@ -14,11 +14,11 @@ const STATES = new Set(['new', 'saved', 'reviewed']);
 const DONE_STATES = ['reviewed'];
 const COOKIE = 'ja_session';
 const SESSION_DAYS = 30;
-const LAST_CRON_KEY = 'last_cron_call';
+export const LAST_CRON_KEY = 'last_cron_call';
 /** Wrong passwords allowed per 15 minutes, per IP and in total. */
 const LOGIN_LIMIT = { window: 15 * 60_000, perIp: 8, total: 40 };
 /** Search work after the scheduler has been answered (ms); the function's limit is 300 s. */
-const BACKGROUND_BUDGET_MS = 230_000;
+export const BACKGROUND_BUDGET_MS = 230_000;
 
 export const SECURITY_HEADERS: Record<string, string> = {
   'x-content-type-options': 'nosniff',
@@ -40,6 +40,12 @@ export interface HandlerDeps {
    * the next scheduler call instead.
    */
   background?: () => ((p: Promise<unknown>) => void) | null;
+  /**
+   * True on an always-on server that runs the searches itself (dist/server.mjs): a search
+   * started from the dashboard then runs in the background and the page only watches its
+   * progress, instead of pushing it forward with /api/step.
+   */
+  selfScheduling?: boolean;
 }
 
 type Handler = (req: IncomingMessage, res: ServerResponse) => Promise<void>;
@@ -140,15 +146,40 @@ export function createHandler(deps: HandlerDeps): Handler {
     }
   };
 
+  /**
+   * Starts the requested searches in the background (always-on server only). A search that
+   * is already running absorbs the request; if another call holds the search lock, wait for it.
+   */
+  const kick = (): boolean => {
+    const bg = deps.selfScheduling ? deps.background?.() : null;
+    if (!bg) return false;
+    const pause = engine.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+    bg(
+      (async () => {
+        for (let i = 0; i < 60; i++) {
+          const r = await continueSearch(engine, BACKGROUND_BUDGET_MS);
+          if (r?.status !== 'busy') return;
+          await pause(3000);
+        }
+      })().catch((err: Error) => log.error('background search failed', { error: err.message })),
+    );
+    return true;
+  };
+
   const state = async () => {
-    const { defs, error } = await filterDefs();
+    const [{ defs, error }, countRows, discovery, cycle, last, lastSearches, lastSchedulerCall] = await Promise.all([
+      filterDefs(),
+      store.filterCounts(),
+      loadDiscovery(store),
+      getCycle(store),
+      store.lastRuns(1).then((r) => r[0]),
+      store.filterLastSearches(),
+      store.kvGet(LAST_CRON_KEY),
+    ]);
     const enabled = defs.filter((f) => f.enabled).map((f) => f.name);
-    const counts = new Map((await store.filterCounts()).map((c) => [c.filter, c]));
-    const discovery = await loadDiscovery(store);
-    const cycle = await getCycle(store);
-    const last = (await store.lastRuns(1))[0];
-    const shown = await store.listJobs({ filters: enabled, limit: 2000 });
-    const schedules = new Map((await filterSchedules(engine)).map((s) => [s.name, s]));
+    const counts = new Map(countRows.map((c) => [c.filter, c]));
+    const [totals, pending] = await Promise.all([store.jobTotals(enabled), cycle ? false : hasPendingWork(store)]);
+    const schedules = new Map(schedulesOf(enabled, lastSearches, cfg.intervalMinutes, (engine.now ?? Date.now)()).map((s) => [s.name, s]));
     const nextDue = [...schedules.values()].map((s) => s.nextDueAt).sort()[0] ?? null;
     const lastFinished = [...schedules.values()].map((s) => s.lastSearch?.finishedAt ?? '').sort().at(-1) || null;
     return {
@@ -167,17 +198,19 @@ export function createHandler(deps: HandlerDeps): Handler {
         nextDueAt: schedules.get(f.name)?.nextDueAt ?? null,
       })),
       filtersError: error,
-      totals: { seen: shown.length, newJobs: await store.newJobCount(enabled) },
+      totals,
       schedule: {
         intervalMinutes: cfg.intervalMinutes,
         /** Earliest next automatic search among the enabled filters. */
         nextDueAt: nextDue,
         /** Most recent finished search of any enabled filter. */
         lastSearchAt: lastFinished,
-        lastSchedulerCall: await store.kvGet(LAST_CRON_KEY),
+        lastSchedulerCall,
+        /** The server starts due searches itself; the page only watches. */
+        selfScheduling: !!deps.selfScheduling,
       },
-      lastRun: last ? { startedAt: last.started_at, finishedAt: last.finished_at, status: last.status, summary: last.summary ? (JSON.parse(last.summary) as unknown) : null } : null,
-      running: cycle ? progressOf(cycle) : (await hasPendingWork(store)) ? { pending: true } : null,
+      lastRun: last ? { id: last.id, startedAt: last.started_at, finishedAt: last.finished_at, status: last.status, summary: last.summary ? (JSON.parse(last.summary) as unknown) : null } : null,
+      running: cycle ? progressOf(cycle) : pending ? { pending: true } : null,
     };
   };
 
@@ -280,6 +313,7 @@ export function createHandler(deps: HandlerDeps): Handler {
         if (path === '/api/search') {
           const filter = typeof body.filter === 'string' && body.filter ? body.filter : null;
           await requestSearch(store, filter, 'manual');
+          if (kick()) return send(res, 200, { status: 'started' });
           return send(res, 200, await step(engine, interactiveMs));
         }
         if (path === '/api/upwork/connect') {
@@ -288,6 +322,7 @@ export function createHandler(deps: HandlerDeps): Handler {
             if ('url' in r) return send(res, 200, { url: r.url });
             // The stored sign-in still works: nothing to sign in to; search with it.
             await requestSearch(store, null, 'connect');
+            kick();
             return send(res, 200, { connected: `${r.connected.account.name} (${r.connected.account.roleLabel})` });
           } catch (err) {
             log.error('Upwork sign-in could not start', { error: (err as Error).message });
@@ -300,6 +335,7 @@ export function createHandler(deps: HandlerDeps): Handler {
             const d = await finishUpworkSignInFromUrl(cfg, store, typeof body.url === 'string' ? body.url : '');
             log.info('Upwork connected from the dashboard', { account: d.account.name });
             await requestSearch(store, null, 'connect');
+            kick();
             return send(res, 200, { connected: `${d.account.name} (${d.account.roleLabel})` });
           } catch (err) {
             log.error('Upwork sign-in failed', { error: (err as Error).message });
@@ -330,6 +366,7 @@ export function createHandler(deps: HandlerDeps): Handler {
           log.info('filter added from dashboard', { filter: name });
           // Its first search starts now; the page keeps calling /api/step until it finishes.
           await requestSearch(store, name, 'new-filter');
+          kick();
           return send(res, 200, { ok: true, name });
         }
         if (path === '/api/filters' && body.action === 'remove') {

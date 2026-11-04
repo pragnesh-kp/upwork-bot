@@ -45,6 +45,8 @@
   --i-chevron: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'><path d='m6 9 6 6 6-6'/></svg>");
   --i-close: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.4' stroke-linecap='round'><path d='M18 6 6 18M6 6l12 12'/></svg>");
   --i-sliders: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round'><path d='M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1'/><circle cx='15' cy='6' r='2'/><circle cx='9' cy='12' r='2'/><circle cx='17' cy='18' r='2'/></svg>");
+  --i-eye: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z'/><circle cx='12' cy='12' r='3'/></svg>");
+  --i-eye-off: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M9.9 5.2A9.6 9.6 0 0 1 12 5c6.5 0 10 7 10 7a17 17 0 0 1-2.6 3.6M6.6 6.6A16.5 16.5 0 0 0 2 12s3.5 7 10 7a9.4 9.4 0 0 0 5.4-1.6M9.9 9.9a3 3 0 0 0 4.2 4.2M3 3l18 18'/></svg>");
   --i-search-muted: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2.2' stroke-linecap='round'><circle cx='11' cy='11' r='7'/><path d='m20 20-3.5-3.5'/></svg>");
   color-scheme: light;
 }
@@ -358,6 +360,43 @@ button.link.danger { color: var(--red); }
 .login-box label { font-size: 12px; font-weight: 650; color: var(--muted); }
 .login-box input { height: 44px; }
 .login-box button { height: 46px; margin-top: 6px; font-size: 15px; }
+.login-box button.pw-toggle { height: auto; margin: 0; }
+.pw-field { position: relative; }
+.pw-field input { width: 100%; padding-right: 48px; }
+.pw-toggle {
+  position: absolute; top: 4px; right: 4px; bottom: 4px; width: 40px; padding: 0;
+  border: 0; border-radius: 9px; background: transparent; box-shadow: none; color: var(--muted);
+}
+.pw-toggle:hover { background: var(--accent-soft); color: var(--accent); }
+.pw-toggle::before {
+  content: ""; width: 20px; height: 20px; background: currentColor;
+  -webkit-mask: var(--i-eye) center / contain no-repeat; mask: var(--i-eye) center / contain no-repeat;
+}
+.pw-toggle[aria-pressed="true"]::before { -webkit-mask-image: var(--i-eye-off); mask-image: var(--i-eye-off); }
+.login-msg {
+  margin: 4px 0 0; padding: 9px 12px; border-radius: 10px; font-size: 13px; font-weight: 600;
+  color: var(--red); background: color-mix(in srgb, var(--red) 10%, transparent); animation: slide-in 0.2s ease;
+}
+.login-msg.ok { color: var(--accent); background: var(--accent-soft); }
+.login-box.shake { animation: shake 0.4s ease; }
+.login-box input[aria-invalid="true"] { border-color: var(--red); }
+/* A spinner inside a busy button (Log in, Search now). */
+button.busy::before {
+  content: ""; width: 15px; height: 15px; border-radius: 50%;
+  border: 2px solid currentColor; border-right-color: transparent; animation: spin 0.7s linear infinite;
+}
+
+/* --- Loading screen (until the server answers) ------------------------------------ */
+.boot { min-height: 100vh; min-height: 100dvh; display: grid; place-items: center; padding: 16px; }
+.boot-box { display: grid; justify-items: center; gap: 14px; text-align: center; max-width: 340px; animation: fade 0.3s ease; }
+.boot-box .logo { width: 56px; height: 56px; padding: 8px; border-radius: 16px; }
+.boot-box p { margin: 0; font-size: 14px; }
+.boot-box.failed .spinner { display: none; }
+.spinner {
+  width: 28px; height: 28px; border-radius: 50%;
+  border: 3px solid var(--accent-soft); border-top-color: var(--accent); animation: spin 0.8s linear infinite;
+}
+.jobs .loading { display: flex; justify-content: center; padding: 48px 0; }
 
 /* --- Connect Upwork panel -------------------------------------------------------- */
 .connect-panel {
@@ -686,6 +725,7 @@ button.link.danger { color: var(--red); }
 
 /* --- Animations ------------------------------------------------------------------ */
 @keyframes spin { to { transform: rotate(360deg); } }
+@keyframes shake { 0%, 100% { transform: none; } 20%, 60% { transform: translateX(-7px); } 40%, 80% { transform: translateX(7px); } }
 @keyframes pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.45; transform: scale(0.8); } }
 @keyframes pop { from { opacity: 0; transform: translateY(10px) scale(0.94); } to { opacity: 1; transform: none; } }
 @keyframes fade { from { opacity: 0; } to { opacity: 1; } }

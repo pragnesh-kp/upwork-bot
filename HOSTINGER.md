@@ -4,11 +4,11 @@ The dashboard and the searches run as a **Node.js Web App** on Hostinger. The da
 
 ```
 your browser ──password──▶ https://upwork.pelicanstechnology.com ─┐
-cron-job.org ─every 5 min─▶ …/api/cron (backup)                      ├─ Node.js app (dist/server.mjs) ─▶ MySQL (localhost)
-the app itself ─every 5 min─▶ starts searches that are due           ┘                                 └▶ Upwork MCP (official)
+Hostinger Cron ─every 5 min─▶ …/api/ping (keep awake)              ├─ Node.js app (dist/server.mjs) ─▶ MySQL (localhost)
+the app itself ─every minute─▶ starts searches that are due          ┘                                 └▶ Upwork MCP (official)
 ```
 
-The server stays running, so it searches by itself every 30 minutes (`SEARCH_INTERVAL_MINUTES`). An outside caller (cron-job.org) is still recommended as a backup, in case Hostinger restarts or idles the app.
+The server stays running, so it searches by itself every 30 minutes (`SEARCH_INTERVAL_MINUTES`). Hostinger stops apps that sit idle, so a Hostinger Cron Job calls `/api/ping` every 5 minutes to keep it awake (step 8).
 
 PowerShell commands marked **PC** run on your Windows PC, in `C:\Users\Admin\Desktop\upwork-bot\job-alert-lite`.
 
@@ -123,22 +123,26 @@ Open **https://upwork.pelicanstechnology.com** and enter `DASHBOARD_PASSWORD`. W
 
 ## 8. Scheduler: search every 30 minutes
 
-Each filter is searched again **30 minutes** (`SEARCH_INTERVAL_MINUTES`) after its previous search. Something has to call `/api/cron` to start it. A call when nothing is due does nothing (no Upwork request), so calling often is harmless. The server also checks every 5 minutes by itself, but Hostinger may stop an idle app, so add a caller.
+Each filter is searched again **30 minutes** (`SEARCH_INTERVAL_MINUTES`) after its previous search. The server checks **every minute** by itself and runs a due search to the end in the background. A check when nothing is due does nothing (no Upwork request).
 
-### 8a. Hostinger Cron Jobs (main caller)
+Hostinger **stops the app when nobody has used it for a while**. A stopped app can't search, and those scans show up as *missed*. A cron job that opens `/api/ping` every 5 minutes keeps it awake. It needs no secret: it only wakes the app and starts searches that are already due.
+
+### 8a. Hostinger Cron Job (keep-awake, required)
 
 hPanel → **Websites** → *pelicanstechnology.com* → **Advanced → Cron Jobs** → **Custom**:
 
-* **Command** (put your `CRON_SECRET` after `Bearer `):
+* **Command:**
 
   ```
-  curl -s -m 60 -H "Authorization: Bearer YOUR_CRON_SECRET" https://upwork.pelicanstechnology.com/api/cron
+  curl -s -m 30 https://upwork.pelicanstechnology.com/api/ping
   ```
 
-* **Schedule:** every 5 minutes (`*/5 * * * *`). Every 30 minutes (`*/30 * * * *`) also works. A search that you start by hand with **Search now** then waits for the next 30-minute mark, so a filter can go up to an hour between searches.
-* Save. After a few minutes, **View output** next to the cron job should show `{"status":"idle"}`, `{"status":"finished",…}` or `{"status":"continued",…}`. `{"error":"Unauthorized"}` means the secret differs from the app's `CRON_SECRET`.
+* **Schedule:** every 5 minutes (`*/5 * * * *`).
+* Save. After a few minutes, **View output** next to the cron job should show `{"ok":true,"searching":false}` (or `true` while a search runs).
 
-The dashboard's **Insights** tab shows every scan, and the top line warns when the scheduler hasn't called for over 60 minutes.
+The dashboard's top row shows *Scheduler: built in · checked … ago*, and warns (*Keep-awake*) when no wake-up call came for over 60 minutes. The **Insights** tab shows every scan.
+
+`/api/cron` (with `Authorization: Bearer <CRON_SECRET>`) still works as before. You don't need it on Hostinger.
 
 ### 8b. Backups (optional)
 

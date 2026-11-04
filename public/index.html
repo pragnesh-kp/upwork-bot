@@ -10,15 +10,28 @@
     <link rel="stylesheet" href="/app.css" />
   </head>
   <body>
+    <!-- Shown until the server answers, so the page is never blank while the app wakes up. -->
+    <section id="boot" class="boot" aria-live="polite">
+      <div class="boot-box">
+        <img class="logo" src="/favicon.svg" alt="" width="52" height="52" />
+        <span class="spinner" aria-hidden="true"></span>
+        <p id="boot-msg" class="muted">Loading…</p>
+        <button id="boot-retry" class="primary" type="button" hidden>Try again</button>
+      </div>
+    </section>
+
     <section id="login" class="login" hidden>
       <form id="login-form" class="login-box" autocomplete="on">
         <img class="logo" src="/favicon.svg" alt="" width="52" height="52" />
         <h1>Job <span class="grad-text">Alerts</span></h1>
         <p class="muted login-sub">Fresh Upwork jobs, the moment they're posted.</p>
         <label for="password">Password</label>
-        <input id="password" type="password" autocomplete="current-password" required autofocus />
-        <button class="primary" type="submit">Log in</button>
-        <p id="login-msg" class="add-msg err" hidden></p>
+        <div class="pw-field">
+          <input id="password" type="password" autocomplete="current-password" required enterkeyhint="go" />
+          <button id="pw-toggle" class="pw-toggle" type="button" aria-label="Show password" aria-pressed="false" title="Show password"></button>
+        </div>
+        <button id="login-btn" class="primary" type="submit"><span class="btn-label">Log in</span></button>
+        <p id="login-msg" class="login-msg" role="alert" hidden></p>
       </form>
     </section>
 

@@ -124,9 +124,9 @@ export async function buildInsights(d: EngineDeps, q: InsightsQuery) {
   const tz = q.tzOffsetMinutes;
   const intervalMs = cfg.intervalMinutes * 60_000;
   const graceMs = cfg.scanGraceMinutes * 60_000;
-  const filters = (await enabledFilters(store)).map((f) => f.name);
-  const created = await store.filterCreatedAt();
-  const activeRunId = (await getCycle(store))?.runId ?? null;
+  const [enabled, created, cycle] = await Promise.all([enabledFilters(store), store.filterCreatedAt(), getCycle(store)]);
+  const filters = enabled.map((f) => f.name);
+  const activeRunId = cycle?.runId ?? null;
 
   // The window: a chosen local day, or the last 24 hours.
   const today = localDay(now, tz);
@@ -150,34 +150,42 @@ export async function buildInsights(d: EngineDeps, q: InsightsQuery) {
       const byFilter = Object.fromEntries(filters.map((f) => [f, rows.find((r) => r.day === day && r.filter === f)?.count ?? 0]));
       return { day, total: rows.find((r) => r.day === day && r.filter === null)?.count ?? 0, byFilter };
     });
-  const posted = tally(await store.jobDayCounts('posted', filters, iso(firstDayMs), tz));
-  const found = tally(await store.jobDayCounts('found', filters, iso(firstDayMs), tz));
+  // The queries below don't depend on each other: run them together.
+  const anchorFrom = Math.min(from, now - DAY_MS) - ANCHOR_LOOKBACK_MS;
+  const cFrom = q.compareDay ? localDayStart(q.compareDay, tz) : 0;
+  const [postedRows, foundRows, last24hRows, inWindowRows, hourRows, compareRows, compareHourRows, scanRows] = await Promise.all([
+    store.jobDayCounts('posted', filters, iso(firstDayMs), tz),
+    store.jobDayCounts('found', filters, iso(firstDayMs), tz),
+    store.jobsPostedBetween(filters, iso(now - DAY_MS), iso(now)),
+    store.jobsPostedBetween(filters, iso(from), iso(to)),
+    store.jobHourCounts(filters, iso(from), iso(from + DAY_MS)),
+    q.compareDay ? store.jobsPostedBetween(filters, iso(cFrom), iso(cFrom + DAY_MS)) : null,
+    q.compareDay ? store.jobHourCounts(filters, iso(cFrom), iso(cFrom + DAY_MS)) : null,
+    store.scans(iso(anchorFrom), iso(Math.max(to, now) + 1)),
+  ]);
+  const posted = tally(postedRows);
+  const found = tally(foundRows);
   const toCounts = (rows: { filter: string | null; count: number }[]) => ({
     total: rows.find((r) => r.filter === null)?.count ?? 0,
     byFilter: Object.fromEntries(filters.map((f) => [f, rows.find((r) => r.filter === f)?.count ?? 0])),
   });
-  const last24h = toCounts(await store.jobsPostedBetween(filters, iso(now - DAY_MS), iso(now)));
-  const inWindow = toCounts(await store.jobsPostedBetween(filters, iso(from), iso(to)));
+  const last24h = toCounts(last24hRows);
+  const inWindow = toCounts(inWindowRows);
 
   // Jobs posted per hour: 24 hours from the window start (a day, or the last 24 hours).
-  const hourly = async (start: number) => {
-    const rows = await store.jobHourCounts(filters, iso(start), iso(start + DAY_MS));
+  const hourly = (start: number, rows: Awaited<ReturnType<typeof store.jobHourCounts>>) => {
     return Array.from({ length: 24 }, (_, h) => ({
       start: iso(start + h * 3_600_000),
       total: rows.find((r) => r.hour === h && r.filter === null)?.count ?? 0,
       byFilter: Object.fromEntries(filters.map((f) => [f, rows.find((r) => r.hour === h && r.filter === f)?.count ?? 0])),
     }));
   };
-  const hourCounts = await hourly(from);
+  const hourCounts = hourly(from, hourRows);
   let compare: { day: string; counts: ReturnType<typeof toCounts>; hours: typeof hourCounts } | null = null;
-  if (q.compareDay) {
-    const cFrom = localDayStart(q.compareDay, tz);
-    compare = { day: q.compareDay, counts: toCounts(await store.jobsPostedBetween(filters, iso(cFrom), iso(cFrom + DAY_MS))), hours: await hourly(cFrom) };
-  }
+  if (q.compareDay && compareRows && compareHourRows) compare = { day: q.compareDay, counts: toCounts(compareRows), hours: hourly(cFrom, compareHourRows) };
 
   // --- scan history --------------------------------------------------------------
-  const anchorFrom = Math.min(from, now - DAY_MS) - ANCHOR_LOOKBACK_MS;
-  const allScans: ScanStatusRow[] = (await store.scans(iso(anchorFrom), iso(Math.max(to, now) + 1))).map((s) => ({ ...s, outcome: scanOutcome(s, activeRunId, now) }));
+  const allScans: ScanStatusRow[] = scanRows.map((s) => ({ ...s, outcome: scanOutcome(s, activeRunId, now) }));
   const inRange = (ms: number, a: number, b: number) => ms >= a && ms < b;
   const windowScans = allScans.filter((s) => inRange(Date.parse(s.startedAt), from, to + 1));
 

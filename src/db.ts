@@ -726,6 +726,18 @@ export class Store {
     return Number(res.rows[0]?.n ?? 0);
   }
 
+  /** Jobs returned by any of these filters (every review state) and the unreviewed ones, each job counted once. */
+  async jobTotals(filters: string[]): Promise<{ seen: number; newJobs: number }> {
+    if (!filters.length) return { seen: 0, newJobs: 0 };
+    const r = (
+      await this.run(
+        `SELECT COUNT(*) AS n, SUM(CASE WHEN d.review_state = 'new' THEN 1 ELSE 0 END) AS fresh FROM job_details d WHERE EXISTS (SELECT 1 FROM job_matches m WHERE m.source = d.source AND m.job_id = d.job_id AND m.filter_name IN (${filters.map(() => '?').join(',')}))`,
+        filters,
+      )
+    ).rows[0];
+    return { seen: Number(r?.n ?? 0), newJobs: Number(r?.fresh ?? 0) };
+  }
+
   /** Per filter: jobs still open (what the "All" tab lists: not reviewed) and unreviewed ones. */
   async filterCounts(): Promise<{ filter: string; total: number; newCount: number }[]> {
     const rows = (

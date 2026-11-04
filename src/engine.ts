@@ -368,11 +368,15 @@ export interface FilterSchedule {
  * started. Per filter, so searching one filter by hand never delays the others.
  */
 export async function filterSchedules(d: EngineDeps): Promise<FilterSchedule[]> {
-  const now = d.now ?? Date.now;
-  const last = await d.store.filterLastSearches();
-  return (await enabledFilters(d.store)).map((f) => {
-    const s = last.get(f.name) ?? null;
-    return { name: f.name, lastSearch: s, nextDueAt: new Date(s ? Date.parse(s.startedAt) + d.cfg.intervalMinutes * 60_000 : now()).toISOString() };
+  const [last, filters] = await Promise.all([d.store.filterLastSearches(), enabledFilters(d.store)]);
+  return schedulesOf(filters.map((f) => f.name), last, d.cfg.intervalMinutes, (d.now ?? Date.now)());
+}
+
+/** The schedules of these (enabled) filters, from their last searches. */
+export function schedulesOf(names: string[], last: Map<string, FilterLastSearch>, intervalMinutes: number, nowMs: number): FilterSchedule[] {
+  return names.map((name) => {
+    const s = last.get(name) ?? null;
+    return { name, lastSearch: s, nextDueAt: new Date(s ? Date.parse(s.startedAt) + intervalMinutes * 60_000 : nowMs).toISOString() };
   });
 }
 

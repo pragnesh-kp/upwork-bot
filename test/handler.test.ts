@@ -25,11 +25,11 @@ class FakeSource implements JobSource {
   async close() {}
 }
 
-async function start(env: Record<string, string> = { DASHBOARD_PASSWORD: PASSWORD, CRON_SECRET: CRON }, extra: Pick<HandlerDeps, 'background'> & { now?: () => number; sleep?: (ms: number) => Promise<void> } = {}) {
+async function start(env: Record<string, string> = { DASHBOARD_PASSWORD: PASSWORD, CRON_SECRET: CRON }, extra: Pick<HandlerDeps, 'background' | 'selfScheduling'> & { now?: () => number; sleep?: (ms: number) => Promise<void> } = {}) {
   const store = Store.open(':memory:');
   const src = new FakeSource();
   const cfg = loadConfig({ DATA_DIR: 'data', TURSO_DATABASE_URL: 'file::memory:', TOKEN_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString('base64'), DELAY_BETWEEN_SEARCHES_MS: '0', ...env } as NodeJS.ProcessEnv);
-  const handler = createHandler({ store, cfg, background: extra.background, engine: { openSource: async () => src, sleep: extra.sleep ?? (async () => {}), ...(extra.now ? { now: extra.now } : {}) } });
+  const handler = createHandler({ store, cfg, background: extra.background, selfScheduling: extra.selfScheduling, engine: { openSource: async () => src, sleep: extra.sleep ?? (async () => {}), ...(extra.now ? { now: extra.now } : {}) } });
   const server: Server = createServer((req, res) => void handler(req, res));
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
   const port = (server.address() as { port: number }).port;
@@ -144,6 +144,29 @@ test('the scheduler answers quickly and finishes a long search in the background
     await Promise.all(pending);
     assert.equal(t.src.calls, 3, 'the background work searched the remaining filters');
     assert.equal((await t.store.filterLastSearches()).size, 3);
+  } finally {
+    await t.close();
+  }
+});
+
+test('on an always-on server "Search now" answers at once and the search runs in the background', async () => {
+  const pending: Promise<unknown>[] = [];
+  const t = await start(undefined, { background: () => (p) => void pending.push(p), selfScheduling: true });
+  try {
+    await t.store.addFilter({ name: 'React', url: 'https://www.upwork.com/nx/search/jobs?q=react', enabled: true });
+    await t.login();
+    const r = await t.call('POST', '/api/search', { body: { filter: null } });
+    assert.equal(r.status, 200);
+    assert.equal(r.body.status, 'started');
+    const during = (await t.call('GET', '/api/state')).body as { running: unknown; schedule: { selfScheduling: boolean } };
+    assert.equal(during.schedule.selfScheduling, true, 'the page knows not to push searches itself');
+    await Promise.all(pending);
+    assert.equal(t.src.calls, 1);
+    const after = (await t.call('GET', '/api/state')).body as { running: unknown; totals: { seen: number; newJobs: number }; lastRun: { id: number; finishedAt: string | null; summary: { newJobs: number } } };
+    assert.equal(after.running, null);
+    assert.deepEqual(after.totals, { seen: 1, newJobs: 1 });
+    assert.ok(after.lastRun.finishedAt);
+    assert.equal(after.lastRun.summary.newJobs, 1);
   } finally {
     await t.close();
   }
