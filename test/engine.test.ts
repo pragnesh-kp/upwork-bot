@@ -344,7 +344,7 @@ test('the dashboard lists only jobs returned by the configured filters, labelled
   assert.equal(await store.newJobCount(['AI Developer']), 1);
 });
 
-test('jobs posted more than MAX_JOB_AGE_DAYS ago are not fetched, and paging stops at a page of only old jobs', async () => {
+test('jobs of any age are fetched: old posts are stored and paging continues past them', async () => {
   const { store, src, deps, add } = setup({ FIRST_RUN_MAX_PAGES: '10' });
   await add('React', 'react');
   const daysAgo = (n: number) => new Date(Date.now() - n * 86_400_000).toISOString();
@@ -358,8 +358,8 @@ test('jobs posted more than MAX_JOB_AGE_DAYS ago are not fetched, and paging sto
   ];
   await requestSearch(store, null);
   assert.equal((await step(deps, 60_000)).status, 'finished');
-  assert.deepEqual((await store.listJobs({ filters: ['React'] })).map((j) => j.jobId).sort(), ['fresh1', 'fresh2']);
-  assert.equal(src.calls, 2, 'the second page is all old, so the third is never read');
+  assert.deepEqual((await store.listJobs({ filters: ['React'] })).map((j) => j.jobId).sort(), ['fresh1', 'fresh2', 'old1', 'old2', 'old3', 'old4']);
+  assert.equal(src.calls, 3, 'every page is read, old posts included');
 });
 
 test('a deleted job is removed and never added back by a later search', async () => {
@@ -376,7 +376,7 @@ test('a deleted job is removed and never added back by a later search', async ()
 });
 
 test('nothing is ever cleared automatically: year-old jobs, counts, history and deleted ids survive searches (RETENTION_DAYS is ignored)', async () => {
-  const { store, src, add, search } = setup({ RETENTION_DAYS: '30', MAX_JOB_AGE_DAYS: '3' });
+  const { store, src, add, search } = setup({ RETENTION_DAYS: '30', MAX_JOB_AGE_DAYS: '3' }) /* both ignored now */;
   await add('React', 'react');
   const old = new Date(Date.now() - 400 * 86_400_000).toISOString();
   // Rows written a year ago (as an older version of the app would have left them).

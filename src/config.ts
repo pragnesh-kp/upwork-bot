@@ -30,11 +30,6 @@ export interface Config {
   stepBudgetSeconds: number;
   /** Local `npm run dev` only. */
   dev: { port: number; dataDir: string };
-  /**
-   * Jobs posted longer ago than this are not fetched. Stored jobs are never cleared automatically:
-   * all data is kept until you delete it on the dashboard.
-   */
-  maxJobAgeDays: number;
   /** Re-checking stored jobs on Upwork, to mark the ones removed there. */
   removalCheck: {
     /** Jobs checked per round (0 = never check). */
@@ -161,7 +156,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     scanGraceMinutes: int(env, 'SCAN_GRACE_MINUTES', 10, 1, 720),
     stepBudgetSeconds: int(env, 'STEP_BUDGET_SECONDS', 20, 5, 280),
     dev: { port: int(env, 'DASHBOARD_PORT', 5174, 1024, 65535), dataDir },
-    maxJobAgeDays: int(env, 'MAX_JOB_AGE_DAYS', 3, 1, 30),
     removalCheck: {
       batch: int(env, 'REMOVAL_CHECK_BATCH', 5, 0, 50),
       everyHours: int(env, 'REMOVAL_CHECK_HOURS', 24, 1, 720),

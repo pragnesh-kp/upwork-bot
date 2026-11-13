@@ -276,12 +276,10 @@ export async function step(d: EngineDeps, budgetMs: number): Promise<StepResult>
           const ids = page.jobs.map((j) => j.id);
           const seen = await store.seenIds(SOURCE, ids);
           const deleted = await store.deletedIds(SOURCE, ids);
-          const oldestAllowed = now() - cfg.maxJobAgeDays * 86_400_000;
-          const tooOld = (job: Job) => !!job.postedAt && Date.parse(job.postedAt) < oldestAllowed;
           const keep: { details: JobDetails; baseline: boolean }[] = [];
           for (const job of page.jobs) {
-            // Deleted on the dashboard, or posted more than MAX_JOB_AGE_DAYS ago: never stored.
-            if (deleted.has(job.id) || tooOld(job)) continue;
+            // Deleted on the dashboard: never stored again. Jobs of any age are fetched.
+            if (deleted.has(job.id)) continue;
             // Upwork applied this filter's keyword and category; re-check budget, rate and type locally.
             const m = matchJob(job, f!.criteria, { trustKeyword: true });
             if (!m.matched) {
@@ -301,8 +299,6 @@ export async function step(d: EngineDeps, budgetMs: number): Promise<StepResult>
           // After a long gap more jobs piled up: read as far as a first search would (it still stops at a known page).
           const maxPages = fs.firstRun || fs.catchUp ? cfg.search.firstRunMaxPages : cfg.search.maxPagesPerFilter;
           if (!task.cursor) task.done = true;
-          // Newest first: a page where every job is too old means the older pages are too.
-          else if (page.jobs.length > 0 && page.jobs.every(tooOld)) task.done = true;
           // Newest first: once a whole page is already known, older pages are too. Upwork's order is
           // not perfectly strict, so always read at least MIN_PAGES before stopping.
           else if (!fs.firstRun && unseen === 0 && task.pages >= MIN_PAGES) task.done = true;
