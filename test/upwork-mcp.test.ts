@@ -202,3 +202,29 @@ test('only https upwork.com links are kept; budgets are labelled, missing data s
   assert.equal(budgetText({ ...base, contractType: 'HOURLY', hourlyMin: 15, hourlyMax: 45 }), 'Hourly · $15–$45/hr');
   assert.equal(budgetText({ ...base, contractType: null }), 'Not provided');
 });
+
+test('checkJob asks find_jobs "get" for one job and only marks it removed on a clear answer', async () => {
+  const full: Discovery = { ...DISCOVERY, mode: 'full', toolNames: { ...DISCOVERY.toolNames, findJobs: 'upwork__find_jobs' } };
+  const check = async (answer: unknown) => {
+    const { caller, calls } = fakeCaller(() => answer);
+    const r = await new UpworkMcpSource(caller, full).checkJob('~02abc');
+    return { r, call: calls[0] };
+  };
+  // The call: read-only "get" with the job id, nested params like the live server.
+  const open = await check(text({ status: 'ok', job: { id: '~02abc', title: 'Still open', status: 'ACTIVE' } }));
+  assert.deepEqual(open.call, { name: 'upwork__find_jobs', args: { action: 'get', org_uid: 'f1', params: { id: '~02abc' } } });
+  assert.deepEqual(open.r, { removed: false, reason: null });
+  // Not found / no longer available → removed, with Upwork's words.
+  const gone = await check({ isError: true, ...text({ status: 'error', error_code: 'NOT_FOUND', reason: 'Job not found' }) });
+  assert.deepEqual(gone.r, { removed: true, reason: 'Job not found' });
+  const gone2 = await check({ isError: true, ...text({ status: 'error', error_code: 'upstream_error', reason: 'This job is no longer available' }) });
+  assert.equal(gone2.r.removed, true);
+  // A closed / cancelled job status → removed.
+  assert.deepEqual((await check(text({ job: { id: '~02abc', job_status: 'CLOSED' } }))).r, { removed: true, reason: 'Upwork status: CLOSED' });
+  assert.equal((await check(text({ id: '~02abc', closed: true }))).r.removed, true);
+  // Unclear answers never mark a job removed: they throw, and the job is checked again later.
+  await assert.rejects(check({ isError: true, ...text({ status: 'error', error_code: 'internal', reason: 'Something broke' }) }), (e: SourceError) => e.kind === 'temporary');
+  await assert.rejects(check({ isError: true, ...text({ status: 'error', error_code: 'rate_limited', reason: 'Slow down', retry_after_seconds: 30 }) }), (e: SourceError) => e.kind === 'rate_limited');
+  await assert.rejects(check({ isError: true, ...text({ status: 'error', error_code: 'token_expired', reason: 'Expired' }) }), (e: SourceError) => e.kind === 'auth');
+  await assert.rejects(check(text({ job: null })), (e: SourceError) => e.kind === 'invalid_response');
+});

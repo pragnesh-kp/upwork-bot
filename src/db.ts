@@ -21,6 +21,18 @@ export interface DashboardJob {
   reviewState: string;
   firstSeenAt: string;
   filters: string[];
+  /** When the bot found out the job is no longer on Upwork (null = still there, as far as known). */
+  removedAt: string | null;
+  /** What Upwork said about it (e.g. "Job not found"). */
+  removedReason: string | null;
+  /** When the bot last asked Upwork whether the job still exists. */
+  checkedAt: string | null;
+}
+
+/** A stored job that is due for a "still on Upwork?" check. */
+export interface JobToCheck {
+  source: string;
+  jobId: string;
 }
 
 export interface JobDetails {
@@ -104,7 +116,8 @@ CREATE TABLE IF NOT EXISTS seen_jobs (
   last_seen_at TEXT NOT NULL,
   PRIMARY KEY (source, job_id)
 );
--- What the dashboard shows. Kept at most RETENTION_DAYS (<= 30, Upwork API & MCP Terms s.8.6).
+-- What the dashboard shows. Kept forever: only a delete on the dashboard removes a job. removed_at
+-- marks jobs that are gone from Upwork (they stay here, with a banner on the dashboard).
 CREATE TABLE IF NOT EXISTS job_details (
   source TEXT NOT NULL,
   job_id TEXT NOT NULL,
@@ -122,6 +135,9 @@ CREATE TABLE IF NOT EXISTS job_details (
   review_state TEXT NOT NULL DEFAULT 'new',
   first_seen_at TEXT NOT NULL,
   last_seen_at TEXT NOT NULL,
+  removed_at TEXT,
+  removed_reason TEXT,
+  checked_at TEXT,
   PRIMARY KEY (source, job_id)
 );
 CREATE INDEX IF NOT EXISTS job_details_seen ON job_details (first_seen_at);
@@ -191,7 +207,7 @@ CREATE TABLE IF NOT EXISTS scan_log (
 CREATE INDEX IF NOT EXISTS scan_log_started ON scan_log (started_at);
 CREATE INDEX IF NOT EXISTS scan_log_run ON scan_log (run_id, filter_name);
 -- Every job each filter found, with its posting time, for daily counts. Separate from job_details,
--- so deleting a job or the 3-day age limit never changes past counts. Kept RETENTION_DAYS (<= 30).
+-- so deleting a job never changes past counts. Kept forever.
 CREATE TABLE IF NOT EXISTS job_posts (
   source TEXT NOT NULL,
   job_id TEXT NOT NULL,
@@ -224,6 +240,7 @@ const MYSQL_SCHEMA = [
     posted_at VARCHAR(40), snippet TEXT, skills TEXT NOT NULL, client_country TEXT, payment_verified TINYINT, proposals TEXT,
     baseline TINYINT NOT NULL DEFAULT 0, review_state VARCHAR(16) NOT NULL DEFAULT 'new',
     first_seen_at VARCHAR(32) NOT NULL, last_seen_at VARCHAR(32) NOT NULL,
+    removed_at VARCHAR(32), removed_reason TEXT, checked_at VARCHAR(32),
     PRIMARY KEY (source, job_id), INDEX job_details_seen (first_seen_at)
   ) ${MYSQL_TABLE}`,
   `CREATE TABLE IF NOT EXISTS job_matches (
@@ -276,8 +293,6 @@ const MYSQL_SCHEMA = [
 /** Every table, in an order that copy-db can follow. */
 export const TABLES = ['filters', 'kv', 'seen_jobs', 'job_details', 'job_matches', 'deleted_jobs', 'filter_baselines', 'runs', 'scan_log', 'job_posts', 'locks', 'login_failures'] as const;
 
-/** Days of scan history kept. */
-export const SCAN_HISTORY_DAYS = 90;
 
 const now = () => new Date().toISOString();
 const str = (v: unknown): string | null => (v === null || v === undefined ? null : String(v));
@@ -430,13 +445,21 @@ export class Store {
     this.ready ??= (async () => {
       await this.db.createTables();
       if (!this.my) {
-        // Columns added after the first SQLite/Turso version (MySQL tables are created complete).
+        // Columns added after the first SQLite/Turso version.
         const cols = new Set((await this.db.execute('PRAGMA table_info(job_details)')).rows.map((r) => String(r.name)));
-        for (const [name, type] of [['client_country', 'TEXT'], ['payment_verified', 'INTEGER'], ['proposals', 'TEXT']] as const) {
+        for (const [name, type] of [['client_country', 'TEXT'], ['payment_verified', 'INTEGER'], ['proposals', 'TEXT'], ['removed_at', 'TEXT'], ['removed_reason', 'TEXT'], ['checked_at', 'TEXT']] as const) {
           if (!cols.has(name)) await this.db.execute(`ALTER TABLE job_details ADD COLUMN ${name} ${type}`);
         }
         const fcols = new Set((await this.db.execute('PRAGMA table_info(filters)')).rows.map((r) => String(r.name)));
         if (!fcols.has('last_search')) await this.db.execute('ALTER TABLE filters ADD COLUMN last_search TEXT');
+      } else {
+        // Columns added after the first MySQL version: tables created earlier get them here.
+        const cols = new Set(
+          (await this.db.execute("SELECT COLUMN_NAME AS name FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'job_details'")).rows.map((r) => String(r.name)),
+        );
+        for (const [name, type] of [['removed_at', 'VARCHAR(32)'], ['removed_reason', 'TEXT'], ['checked_at', 'VARCHAR(32)']] as const) {
+          if (!cols.has(name)) await this.db.execute(`ALTER TABLE job_details ADD COLUMN ${name} ${type}`);
+        }
       }
       // Insights history starts with what is already stored: jobs still listed, and past searches.
       if (!(await this.db.execute('SELECT 1 FROM job_posts LIMIT 1')).rows.length) {
@@ -619,7 +642,10 @@ export class Store {
     return new Set(rows.map((r) => String(r.job_id)));
   }
 
-  /** Deletes a job from the dashboard and remembers its id, so no later search brings it back. */
+  /**
+   * Deletes a job from the dashboard for good: its content is removed and only its id is
+   * remembered, so no later search brings it back.
+   */
   async deleteJob(source: string, jobId: string): Promise<boolean> {
     if (!(await this.run('SELECT 1 FROM job_details WHERE source = ? AND job_id = ?', [source, jobId])).rows.length) return false;
     await this.batch([
@@ -634,6 +660,10 @@ export class Store {
    * Records one page of a filter's results in one transaction: the job is marked
    * seen, its dashboard fields are stored, and the filter is recorded as a match.
    * `baseline` marks jobs first found by a filter's first search.
+   *
+   * A job is one row per (source, job_id): finding it again only refreshes its fields,
+   * never adds a second copy. Being found again also means it is on Upwork, so a
+   * "removed from Upwork" mark is cleared.
    */
   async saveJobs(source: string, filterName: string, jobs: { details: JobDetails; baseline: boolean }[]): Promise<void> {
     const t = now();
@@ -642,9 +672,9 @@ export class Store {
       stmts.push(
         { sql: `INSERT INTO seen_jobs (source, job_id, first_seen_at, last_seen_at) VALUES (?, ?, ?, ?) ${this.onConflictSet('source, job_id', ['last_seen_at'])}`, args: [source, d.id, t, t] },
         {
-          sql: `INSERT INTO job_details (source, job_id, title, url, budget, contract_type, posted_at, snippet, skills, client_country, payment_verified, proposals, baseline, first_seen_at, last_seen_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ${this.onConflictSet('source, job_id', ['title', 'url', 'budget', 'contract_type', 'posted_at', 'snippet', 'skills', 'client_country', 'payment_verified', 'proposals', 'last_seen_at'])}`,
+          sql: `INSERT INTO job_details (source, job_id, title, url, budget, contract_type, posted_at, snippet, skills, client_country, payment_verified, proposals, baseline, first_seen_at, last_seen_at, removed_at, removed_reason)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)
+                ${this.onConflictSet('source, job_id', ['title', 'url', 'budget', 'contract_type', 'posted_at', 'snippet', 'skills', 'client_country', 'payment_verified', 'proposals', 'last_seen_at', 'removed_at', 'removed_reason'])}`,
           args: [
             source,
             d.id,
@@ -679,11 +709,20 @@ export class Store {
    * Jobs for the dashboard: only jobs that one of these filters' own searches returned,
    * each naming only these filters (removed filters never show up).
    */
-  async listJobs(q: { filters: string[]; state?: string | null; excludeStates?: string[]; limit?: number }): Promise<DashboardJob[]> {
+  async listJobs(q: { filters: string[]; state?: string | null; excludeStates?: string[]; limit?: number; postedFrom?: string | null; postedTo?: string | null }): Promise<DashboardJob[]> {
     if (!q.filters.length) return [];
     const marks = q.filters.map(() => '?').join(',');
     const args: (string | number)[] = [...q.filters, ...q.filters];
     let where = `EXISTS (SELECT 1 FROM job_matches m WHERE m.source = d.source AND m.job_id = d.job_id AND m.filter_name IN (${marks}))`;
+    // Posting time in [postedFrom, postedTo) (ISO; jobs without one count by when they were found).
+    if (q.postedFrom) {
+      where += ' AND COALESCE(d.posted_at, d.first_seen_at) >= ?';
+      args.push(q.postedFrom);
+    }
+    if (q.postedTo) {
+      where += ' AND COALESCE(d.posted_at, d.first_seen_at) < ?';
+      args.push(q.postedTo);
+    }
     if (q.state) {
       where += ' AND d.review_state = ?';
       args.push(q.state);
@@ -692,7 +731,7 @@ export class Store {
       where += ` AND d.review_state NOT IN (${q.excludeStates.map(() => '?').join(',')})`;
       args.push(...q.excludeStates);
     }
-    args.push(Math.min(2000, Math.max(1, q.limit ?? 200)));
+    args.push(Math.min(5000, Math.max(1, q.limit ?? 200)));
     const sql = `SELECT d.*, (SELECT ${this.my ? 'JSON_ARRAYAGG' : 'json_group_array'}(filter_name) FROM job_matches m WHERE m.source = d.source AND m.job_id = d.job_id AND m.filter_name IN (${marks})) AS filters
       FROM job_details d WHERE ${where}
       ORDER BY COALESCE(d.posted_at, d.first_seen_at) DESC LIMIT ?`;
@@ -713,7 +752,63 @@ export class Store {
       reviewState: String(r.review_state),
       firstSeenAt: String(r.first_seen_at),
       filters: (jsonList(r.filters) as (string | null)[]).filter((x): x is string => !!x),
+      removedAt: str(r.removed_at),
+      removedReason: str(r.removed_reason),
+      checkedAt: str(r.checked_at),
     }));
+  }
+
+  // --- "still on Upwork?" checks ---------------------------------------------
+
+  /**
+   * Stored jobs due for a check, longest-unchecked first: not already marked removed,
+   * found after `foundSince`, and not checked (or found) after `notCheckedSince`.
+   */
+  async jobsToCheck(q: { foundSince: string; notCheckedSince: string; limit: number }): Promise<JobToCheck[]> {
+    const rows = (
+      await this.run(
+        `SELECT source, job_id FROM job_details
+         WHERE removed_at IS NULL AND first_seen_at >= ? AND COALESCE(checked_at, first_seen_at) < ?
+         ORDER BY COALESCE(checked_at, first_seen_at) LIMIT ?`,
+        [q.foundSince, q.notCheckedSince, Math.max(1, q.limit)],
+      )
+    ).rows;
+    return rows.map((r) => ({ source: String(r.source), jobId: String(r.job_id) }));
+  }
+
+  async hasJob(source: string, jobId: string): Promise<boolean> {
+    return (await this.run('SELECT 1 FROM job_details WHERE source = ? AND job_id = ?', [source, jobId])).rows.length > 0;
+  }
+
+  /**
+   * Records a check. Removed: keeps the first removal time. Still there: clears any mark.
+   * `removed: null` (Upwork could not say) only records that the job was looked at.
+   */
+  async recordJobCheck(source: string, jobId: string, r: { removed: boolean | null; reason?: string | null }): Promise<void> {
+    const t = now();
+    if (r.removed === null) {
+      await this.run('UPDATE job_details SET checked_at = ? WHERE source = ? AND job_id = ?', [t, source, jobId]);
+    } else if (r.removed) {
+      await this.run('UPDATE job_details SET checked_at = ?, removed_at = COALESCE(removed_at, ?), removed_reason = ? WHERE source = ? AND job_id = ?', [
+        t,
+        t,
+        (r.reason ?? '').slice(0, 300) || null,
+        source,
+        jobId,
+      ]);
+    } else {
+      await this.run('UPDATE job_details SET checked_at = ?, removed_at = NULL, removed_reason = NULL WHERE source = ? AND job_id = ?', [t, source, jobId]);
+    }
+  }
+
+  /** Jobs marked as removed from Upwork among these filters' jobs. */
+  async removedCount(filters: string[]): Promise<number> {
+    if (!filters.length) return 0;
+    const res = await this.run(
+      `SELECT COUNT(*) AS n FROM job_details d WHERE d.removed_at IS NOT NULL AND EXISTS (SELECT 1 FROM job_matches m WHERE m.source = d.source AND m.job_id = d.job_id AND m.filter_name IN (${filters.map(() => '?').join(',')}))`,
+      filters,
+    );
+    return Number(res.rows[0]?.n ?? 0);
   }
 
   /** Unreviewed jobs returned by any of these filters, each job counted once. */
@@ -890,35 +985,5 @@ export class Store {
 
   async clearLoginFailures(ip: string): Promise<void> {
     await this.run('DELETE FROM login_failures WHERE ip = ?', [ip]);
-  }
-
-  // --- retention ------------------------------------------------------------
-
-  /**
-   * Retention: drop job identifiers and history older than `days`, and jobs posted more
-   * than `maxJobAgeDays` ago (saved jobs stay until the retention limit).
-   */
-  async purge(days: number, maxJobAgeDays?: number): Promise<void> {
-    const cutoff = new Date(Date.now() - days * 86_400_000).toISOString();
-    const tooOld: Stmt[] = [];
-    if (maxJobAgeDays) {
-      const ageCutoff = new Date(Date.now() - maxJobAgeDays * 86_400_000).toISOString();
-      tooOld.push(
-        { sql: "DELETE FROM job_details WHERE posted_at IS NOT NULL AND posted_at < ? AND review_state <> 'saved'", args: [ageCutoff] },
-        `${this.deleteAs('job_matches')} WHERE NOT EXISTS (SELECT 1 FROM job_details d WHERE d.source = t.source AND d.job_id = t.job_id)`,
-      );
-    }
-    await this.batch([
-      ...tooOld,
-      // Counted from first retrieval, so re-seeing a job never extends how long its content is kept.
-      { sql: 'DELETE FROM job_details WHERE first_seen_at < ?', args: [cutoff] },
-      { sql: 'DELETE FROM seen_jobs WHERE last_seen_at < ?', args: [cutoff] },
-      { sql: 'DELETE FROM job_matches WHERE matched_at < ?', args: [cutoff] },
-      { sql: 'DELETE FROM runs WHERE started_at < ?', args: [cutoff] },
-      { sql: 'DELETE FROM deleted_jobs WHERE deleted_at < ?', args: [cutoff] },
-      { sql: 'DELETE FROM job_posts WHERE found_at < ?', args: [cutoff] },
-      // Scan history holds no Upwork content (only times and counts), so it is kept longer.
-      { sql: 'DELETE FROM scan_log WHERE started_at < ?', args: [new Date(Date.now() - SCAN_HISTORY_DAYS * 86_400_000).toISOString()] },
-    ]);
   }
 }

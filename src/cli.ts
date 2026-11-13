@@ -3,7 +3,7 @@ import { join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { ConfigError, loadConfig, loadEnvFile, mysqlUrl, tursoSettings, type Config } from './config.ts';
 import { Store, TABLES, type JobDetails } from './db.ts';
-import { filterSchedules, getCycle, requestSearch, SOURCE, step, type RunSummary } from './engine.ts';
+import { checkOneJob, filterSchedules, getCycle, requestSearch, SOURCE, step, type RunSummary } from './engine.ts';
 import { loadFilters, toFilterDefs, type FilterDef } from './filters.ts';
 import { configureLog, log } from './log.ts';
 import { discover, loadDiscovery, saveDiscovery, type Discovery } from './mcp/discover.ts';
@@ -233,15 +233,19 @@ async function runCommand(a: ReturnType<typeof args>, cfg: Config, store: Store)
       }
       const call = await store.kvGet('last_cron_call');
       out(`Scheduler last called: ${call ?? 'never'}`);
-      out(`Jobs seen (last ${cfg.retentionDays} days): ${await store.seenCount()}`);
+      out(`Jobs stored (kept until you delete them): ${await store.seenCount()}`);
       const c = await getCycle(store);
       if (c) out(`Search in progress since ${c.startedAt}: ${c.tasks.filter((t) => t.done).length}/${c.tasks.length} done`);
       for (const r of await store.lastRuns()) out(`  run #${r.id} ${r.started_at} ${r.status}`);
       return;
     }
-    case 'purge': {
-      await store.purge(cfg.retentionDays, cfg.maxJobAgeDays);
-      out(`Deleted job data older than ${cfg.retentionDays} days, and unsaved jobs posted more than ${cfg.maxJobAgeDays} days ago.`);
+    case 'check-job': {
+      // npm run check-job -- <job id>: asks Upwork whether one stored job is still there.
+      const id = process.argv[3] ?? '';
+      if (!id) throw new ConfigError('Usage: npm run check-job -- <job id>');
+      const r = await checkOneJob({ store, cfg }, SOURCE, id);
+      if (!r) return out(`No stored job with id ${id}.`);
+      out(r.removed ? `Removed from Upwork: ${r.reason ?? 'no reason given'} (marked on the dashboard).` : 'Still on Upwork.');
       return;
     }
     case 'disconnect': {
@@ -250,7 +254,7 @@ async function runCommand(a: ReturnType<typeof args>, cfg: Config, store: Store)
       return;
     }
     default:
-      out('Commands: connect | discover | import [--from DIR] | copy-db | filters | search [--filter NAME] | dev [--no-scheduler] | status | purge | disconnect');
+      out('Commands: connect | discover | import [--from DIR] | copy-db | filters | search [--filter NAME] | dev [--no-scheduler] | status | check-job <id> | disconnect');
   }
 }
 

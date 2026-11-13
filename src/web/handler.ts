@@ -2,7 +2,7 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Config } from '../config.ts';
 import type { Store } from '../db.ts';
-import { continueSearch, getCycle, hasPendingWork, progressOf, requestSearch, schedulesOf, step, tick, type EngineDeps } from '../engine.ts';
+import { checkOneJob, continueSearch, getCycle, hasPendingWork, progressOf, requestSearch, schedulesOf, step, tick, type EngineDeps } from '../engine.ts';
 import { defaultFilterName, filterProblems, MAX_FILTERS, parseUpworkSearchUrl, toFilterDefs } from '../filters.ts';
 import { log } from '../log.ts';
 import { buildInsights, MAX_TREND_DAYS } from '../insights.ts';
@@ -17,6 +17,8 @@ const SESSION_DAYS = 30;
 export const LAST_CRON_KEY = 'last_cron_call';
 /** Wrong passwords allowed per 15 minutes, per IP and in total. */
 const LOGIN_LIMIT = { window: 15 * 60_000, perIp: 8, total: 40 };
+/** Jobs sent to the page at once (newest first); older ones are reached by picking a day. */
+export const JOB_LIST_LIMIT = 2000;
 /** Search work after the scheduler has been answered (ms); the function's limit is 300 s. */
 export const BACKGROUND_BUDGET_MS = 230_000;
 
@@ -178,7 +180,7 @@ export function createHandler(deps: HandlerDeps): Handler {
     ]);
     const enabled = defs.filter((f) => f.enabled).map((f) => f.name);
     const counts = new Map(countRows.map((c) => [c.filter, c]));
-    const [totals, pending] = await Promise.all([store.jobTotals(enabled), cycle ? false : hasPendingWork(store)]);
+    const [totals, pending, removedFromUpwork] = await Promise.all([store.jobTotals(enabled), cycle ? false : hasPendingWork(store), store.removedCount(enabled)]);
     const schedules = new Map(schedulesOf(enabled, lastSearches, cfg.intervalMinutes, (engine.now ?? Date.now)()).map((s) => [s.name, s]));
     const nextDue = [...schedules.values()].map((s) => s.nextDueAt).sort()[0] ?? null;
     const lastFinished = [...schedules.values()].map((s) => s.lastSearch?.finishedAt ?? '').sort().at(-1) || null;
@@ -186,7 +188,8 @@ export function createHandler(deps: HandlerDeps): Handler {
       account: discovery ? `${discovery.account.name} (${discovery.account.roleLabel})` : null,
       /** Why the last search could not reach Upwork (e.g. an expired sign-in), if it could not. */
       upworkProblem: last?.summary ? ((JSON.parse(last.summary) as { stoppedEarly?: string | null }).stoppedEarly ?? null) : null,
-      retentionDays: cfg.retentionDays,
+      /** Stored jobs that are no longer on Upwork (still listed, with a banner). */
+      removedFromUpwork,
       filters: defs.map((f) => ({
         name: f.name,
         url: f.url,
@@ -290,9 +293,22 @@ export function createHandler(deps: HandlerDeps): Handler {
         const one = url.searchParams.get('filter');
         const stateParam = url.searchParams.get('state');
         const reviewState = stateParam && STATES.has(stateParam) ? stateParam : null;
-        // "All" lists the jobs still open: a reviewed job moves to its own tab.
-        const jobs = await store.listJobs({ filters: one ? enabled.filter((n) => n === one) : enabled, state: reviewState, excludeStates: reviewState ? [] : DONE_STATES, limit: 2000 });
-        return send(res, 200, { jobs });
+        // Optional posting-time range (the page's "Posted on" day, as ISO times in the viewer's time zone).
+        const iso = (name: string) => {
+          const v = url.searchParams.get(name);
+          return v && /^\d{4}-\d{2}-\d{2}T[\d:.]+Z$/.test(v) && Number.isFinite(Date.parse(v)) ? v : null;
+        };
+        // "All" lists the jobs still open: a reviewed job moves to its own tab. Jobs are kept
+        // forever, so only the newest JOB_LIST_LIMIT come at once; a day shows that day's jobs.
+        const rows = await store.listJobs({
+          filters: one ? enabled.filter((n) => n === one) : enabled,
+          state: reviewState,
+          excludeStates: reviewState ? [] : DONE_STATES,
+          limit: JOB_LIST_LIMIT + 1,
+          postedFrom: iso('from'),
+          postedTo: iso('to'),
+        });
+        return send(res, 200, { jobs: rows.slice(0, JOB_LIST_LIMIT), more: rows.length > JOB_LIST_LIMIT, limit: JOB_LIST_LIMIT });
       }
 
       if (req.method === 'POST') {
@@ -301,6 +317,15 @@ export function createHandler(deps: HandlerDeps): Handler {
         // (one function per path; Vercel Hobby allows 12).
         if (path === '/api/jobs') {
           if (typeof body.source !== 'string' || typeof body.jobId !== 'string') return send(res, 400, { error: 'Invalid request' });
+          // { check: true }: ask Upwork now whether this job is still there.
+          if (body.check === true) {
+            try {
+              const r = await checkOneJob(engine, body.source, body.jobId);
+              return r ? send(res, 200, { ok: true, ...r }) : send(res, 404, { error: 'Job not found' });
+            } catch (err) {
+              return send(res, 502, { error: `Could not check this job on Upwork: ${(err as Error).message}` });
+            }
+          }
           if (body.delete === true) {
             const ok = await store.deleteJob(body.source, body.jobId);
             return send(res, ok ? 200 : 404, ok ? { ok: true } : { error: 'Job not found' });

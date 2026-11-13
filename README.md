@@ -8,7 +8,9 @@ It runs on **Hostinger** (a Node.js Web App with a **MySQL** database) at https:
 
 Upwork's API & MCP Terms (s.4.1, effective 5 Oct 2026) say search access "does not authorize activity designed to enumerate or continuously monitor" Upwork's content. **Automatic searches on a schedule go against that clause.** The defaults keep the volume low: one search per filter (and category) every ~30 minutes, 2–3 pages each, 3 s apart. Even so, Upwork could rate-limit, restrict or disconnect your account. You run it at your own risk. To stay fully within the terms, don't set up the scheduler; press **Search now** on the dashboard yourself instead.
 
-Other terms the app follows: MCP data is kept at most 30 days (`RETENTION_DAYS`), the Upwork sign-in is stored encrypted, and the app only calls read-only tools (`list_accounts`, `get_tool_help`, `find_jobs` with `action: "search"`).
+**Keeping jobs:** all data is kept until you delete it yourself, so a job stays on the dashboard even after it is deleted on Upwork. Nothing is cleared automatically. (Upwork's terms, s.8.6, allow keeping MCP outputs at most 30 days. This app does not follow that limit.)
+
+The Upwork sign-in is stored encrypted, and the app only calls read-only tools (`list_accounts`, `get_tool_help`, `find_jobs` with `action: "search"` and `action: "get"`).
 
 ## The dashboard
 
@@ -16,7 +18,10 @@ Other terms the app follows: MCP data is kept at most 30 days (`RETENTION_DAYS`)
 * **Posted on** calendar (plus Today / Yesterday) and a search box over title, description and skills (`node js`, `nodejs` and `Node.js` all match).
 * **Filters** in the left sidebar: click one to see only its jobs. **+ Add filter** takes a link copied from the Upwork search page, and its first search starts right away. **Remove** deletes a filter and its jobs. A link is refused if it uses an Upwork filter the bot can't apply yet (it names which one); otherwise the bot would list jobs outside your filter.
 * **Search now** searches the selected filter (or all of them). **Just found** marks jobs from the latest search. Save / Reviewed sort them; Delete removes a job for good (it is never fetched again). Jobs posted more than 3 days ago (`MAX_JOB_AGE_DAYS`) are not fetched.
-* **Insights** tab: jobs posted per day (last 24 hours, any earlier day, each filter and all combined, most/fewest days), the scan history (start and finish time, filters checked, jobs found, gap since the previous scan, what started it), and a check of every filter's scans against its timetable: each 30-minute slot is **Completed**, **Delayed** (over `SCAN_GRACE_MINUTES`, 10, late), **Missed** (no scan at all), **Failed** (an error, or stopped before finishing) or **Pending**. Job counts are kept `RETENTION_DAYS` (30), scan history 90 days.
+* **Every job is stored once and kept.** A job is one database row however many searches or filters return it. Nothing removes it except **Delete** (or removing its filter).
+* **Deleted from Upwork:** while no search is due, the scheduler asks Upwork about a few stored jobs (`find_jobs` `get`, `REMOVAL_CHECK_BATCH` per 5 minutes; each job about once a day, `REMOVAL_CHECK_HOURS`, for its first 14 days, `REMOVAL_CHECK_DAYS`). A job Upwork reports as not found, closed or cancelled stays listed with a red **Deleted from Upwork** banner. **Check on Upwork** on a job asks right away. A job that turns up in a search again loses the banner.
+* The newest 2000 jobs load at once; pick a date under **Posted on** to see any older day.
+* **Insights** tab: jobs posted per day (last 24 hours, any earlier day, each filter and all combined, most/fewest days), the scan history (start and finish time, filters checked, jobs found, gap since the previous scan, what started it), and a check of every filter's scans against its timetable: each 30-minute slot is **Completed**, **Delayed** (over `SCAN_GRACE_MINUTES`, 10, late), **Missed** (no scan at all), **Failed** (an error, or stopped before finishing) or **Pending**. Job counts and scan history are kept until you delete them.
 * The top line shows the last and next scan (date, time and how long ago / until), live progress, and warnings: an expired Upwork sign-in, or a scheduler that stopped calling. Each filter in the sidebar shows its own last scan (and new jobs found) and next scan.
 
 ## How it works
@@ -53,7 +58,8 @@ With `TURSO_DATABASE_URL` / `TURSO_AUTH_TOKEN` in `.env` these act on the live d
 | `npm run import` | Copy `filters.json`, the old `data/` sign-in and saved jobs into the database |
 | `npm run search` | One full search now (`-- --filter "Name"` for one filter) |
 | `npm run filters` | How each filter URL is translated and what is (not) sent to Upwork |
-| `npm run status` / `purge` | Overview / apply retention now |
+| `npm run status` | Overview |
+| `npm run check-job -- <id>` | Ask Upwork whether one stored job still exists, and mark it |
 | `npm run build:hostinger` / `start` | Build the Hostinger server (`dist/`) / run it |
 | `npm run build` | Build the Vercel output (`.vercel/output`) |
 | `npm run copy-db` | Copy everything from Turso into the MySQL database (see HOSTINGER.md step 6) |

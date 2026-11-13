@@ -30,9 +30,20 @@ export interface Config {
   stepBudgetSeconds: number;
   /** Local `npm run dev` only. */
   dev: { port: number; dataDir: string };
-  retentionDays: number;
-  /** Jobs posted longer ago than this are not fetched (and are cleared from the dashboard unless saved). */
+  /**
+   * Jobs posted longer ago than this are not fetched. Stored jobs are never cleared automatically:
+   * all data is kept until you delete it on the dashboard.
+   */
   maxJobAgeDays: number;
+  /** Re-checking stored jobs on Upwork, to mark the ones removed there. */
+  removalCheck: {
+    /** Jobs checked per round (0 = never check). */
+    batch: number;
+    /** A job is re-checked at most once per this many hours. */
+    everyHours: number;
+    /** Only jobs found in the last this many days are checked. */
+    maxAgeDays: number;
+  };
   logLevel: 'debug' | 'info' | 'warn' | 'error';
 }
 
@@ -150,9 +161,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     scanGraceMinutes: int(env, 'SCAN_GRACE_MINUTES', 10, 1, 720),
     stepBudgetSeconds: int(env, 'STEP_BUDGET_SECONDS', 20, 5, 280),
     dev: { port: int(env, 'DASHBOARD_PORT', 5174, 1024, 65535), dataDir },
-    // Upwork's API & MCP Terms (s. 8.6): MCP outputs may be kept no longer than 30 days.
-    retentionDays: int(env, 'RETENTION_DAYS', 30, 1, 30),
     maxJobAgeDays: int(env, 'MAX_JOB_AGE_DAYS', 3, 1, 30),
+    removalCheck: {
+      batch: int(env, 'REMOVAL_CHECK_BATCH', 5, 0, 50),
+      everyHours: int(env, 'REMOVAL_CHECK_HOURS', 24, 1, 720),
+      maxAgeDays: int(env, 'REMOVAL_CHECK_DAYS', 14, 1, 365),
+    },
     logLevel: level,
   };
 }

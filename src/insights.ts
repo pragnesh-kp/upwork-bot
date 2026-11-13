@@ -241,7 +241,6 @@ export async function buildInsights(d: EngineDeps, q: InsightsQuery) {
     filters,
     intervalMinutes: cfg.intervalMinutes,
     graceMinutes: cfg.scanGraceMinutes,
-    retentionDays: cfg.retentionDays,
     jobs: { last24h, inWindow, posted, found, hours: hourCounts, compare },
     scans: {
       runs: runList.reverse(),

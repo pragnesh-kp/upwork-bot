@@ -286,3 +286,31 @@ test('"Connect Upwork": needs a login; finishing accepts only a loopback callbac
     await t.close();
   }
 });
+
+test('jobs can be listed by posting day; "Check on Upwork" marks a removed job and the state counts it', async () => {
+  const t = await start();
+  try {
+    await t.login();
+    await t.store.addFilter({ name: 'React', url: 'https://www.upwork.com/nx/search/jobs?q=react', enabled: true });
+    await t.call('POST', '/api/search', { body: { filter: 'React' } });
+    const day = (from: number, to: number) => `/api/jobs?from=${new Date(Date.now() + from).toISOString()}&to=${new Date(Date.now() + to).toISOString()}`;
+    const today = await t.call('GET', day(-3_600_000, 3_600_000));
+    assert.deepEqual((today.body.jobs as { jobId: string }[]).map((j) => j.jobId), ['job-React']);
+    assert.equal(today.body.more, false);
+    assert.deepEqual((await t.call('GET', day(-3 * 86_400_000, -2 * 86_400_000))).body.jobs, []);
+    // A malformed time is ignored (all jobs), never put into SQL.
+    assert.equal(((await t.call('GET', `/api/jobs?from=${encodeURIComponent("x' OR 1=1")}`)).body.jobs as unknown[]).length, 1);
+
+    (t.src as unknown as { checkJob: (id: string) => Promise<unknown> }).checkJob = async () => ({ removed: true, reason: 'Job not found' });
+    const r = await t.call('POST', '/api/jobs', { body: { source: SOURCE, jobId: 'job-React', check: true } });
+    assert.deepEqual(r.body, { ok: true, removed: true, reason: 'Job not found' });
+    assert.equal((await t.call('POST', '/api/jobs', { body: { source: SOURCE, jobId: 'nope', check: true } })).status, 404);
+    const [j] = (await t.call('GET', '/api/jobs')).body.jobs as { removedAt: string | null; removedReason: string }[];
+    assert.ok(j!.removedAt, 'still listed, marked removed');
+    assert.equal(j!.removedReason, 'Job not found');
+    const s = (await t.call('GET', '/api/state')).body;
+    assert.equal(s.removedFromUpwork, 1);
+  } finally {
+    await t.close();
+  }
+});

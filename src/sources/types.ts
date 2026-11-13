@@ -56,5 +56,16 @@ export interface JobSource {
   describeMapping(filter: FilterDef): { applied: string[]; notApplied: string[] };
   /** One page of one search target (a category, a subcategory, or {} for a plain search). */
   search(filter: FilterDef, cursor: string | null, pageSize: number, target?: SearchTarget): Promise<SearchPage>;
+  /**
+   * Whether one job is still on Upwork. `removed: true` only on a clear answer (not found,
+   * closed, deleted); unclear answers throw a SourceError so the job is simply checked again later.
+   */
+  checkJob?(jobId: string): Promise<JobCheck>;
   close(): Promise<void>;
+}
+
+export interface JobCheck {
+  removed: boolean;
+  /** Upwork's own words or status, when removed. */
+  reason: string | null;
 }
