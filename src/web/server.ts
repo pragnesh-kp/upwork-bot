@@ -61,6 +61,7 @@ function main() {
   // --- the scheduler: one run at a time; a started search is finished in the same run ---
   let running: Promise<void> | null = null;
   let lastRun = 0;
+  let lastPing = 0;
   const runScheduler = (): Promise<void> => {
     if (!deps) return Promise.resolve();
     const d = deps;
@@ -115,10 +116,14 @@ function main() {
     // app if the host put it to sleep and starts searches that are due. It never starts a
     // search that is not due, so calling it often is harmless.
     if (path === '/api/ping') {
-      if (Date.now() - lastRun > PING_MIN_GAP_MS && deps) {
+      // Record every wake-up call (at most once per gap, so a flood of pings can't flood the
+      // database). This is kept apart from the built-in scheduler's own runs: those happen every
+      // minute, and tying the two together dropped most pings and showed a false Keep-awake warning.
+      if (Date.now() - lastPing > PING_MIN_GAP_MS && deps) {
+        lastPing = Date.now();
         await deps.store.kvSet(LAST_CRON_KEY, new Date().toISOString()).catch(() => {});
-        void runScheduler();
       }
+      if (Date.now() - lastRun > PING_MIN_GAP_MS) void runScheduler();
       return sendJson(res, 200, { ok: true, searching: !!running });
     }
     await api(req, res);
