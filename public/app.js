@@ -5,6 +5,8 @@ const SAVED_FILTER = 'jobAlerts.filter';
 const view = { filter: '', state: '', q: '', day: '' };
 try { view.filter = localStorage.getItem(SAVED_FILTER) || ''; } catch { /* storage unavailable */ }
 let loadedJobs = [];
+/** When the server sent only the newest N jobs of this view: N (older ones are reached by picking a day); else 0. */
+let moreJobs = 0;
 let lastState = null;
 /** Descriptions longer than this fold to a few lines on phones. */
 const SNIPPET_FOLD_CHARS = 180;
@@ -243,7 +245,8 @@ function filterSchedule(f) {
 
 function renderState(s) {
   lastState = s;
-  $('subtitle').textContent = `Upwork MCP${s.account ? ` · ${s.account}` : ''} · ${s.totals.seen} jobs found · kept ${s.retentionDays} days`;
+  const removed = s.removedFromUpwork ? ` · ${s.removedFromUpwork} removed from Upwork` : '';
+  $('subtitle').textContent = `Upwork MCP${s.account ? ` · ${s.account}` : ''} · ${s.totals.seen} jobs found${removed} · kept until you delete them`;
   renderSchedule(s);
   // Sign in to Upwork from here: shown until connected, and again when a search hit a sign-in problem.
   const connect = $('connect-upwork');
@@ -402,6 +405,7 @@ function applyView() {
 function setDay(key) {
   view.day = key;
   applyView();
+  loadJobs().catch((err) => { if (!(err instanceof LoginRequired)) showError(err.message); });
 }
 
 /** "Today", "Yesterday" or e.g. "Saturday, 24 Oct" for the job's posting day (local time). */
@@ -446,7 +450,7 @@ function renderJobs(jobs) {
   let entering = 0;
   const stateLabel = { new: 'New jobs', saved: 'Saved jobs', reviewed: 'Reviewed jobs', '': 'All jobs' }[view.state];
   const extra = [view.filter, view.day ? `posted ${dayLabel(`${view.day}T12:00:00`)}` : null, view.q ? `"${view.q}"` : null].filter(Boolean);
-  $('list-title').textContent = `${stateLabel}${extra.map((x) => ` · ${x}`).join('')} (${shown.length})`;
+  $('list-title').textContent = `${stateLabel}${extra.map((x) => ` · ${x}`).join('')} (${shown.length})${moreJobs && !view.day ? ` · newest ${moreJobs}, pick a date for older jobs` : ''}`;
   const box = $('jobs');
   if (!shown.length) {
     box.replaceChildren(el('div', { class: 'empty' }, view.q || view.day ? 'No jobs match this search or date. Clear the search box or pick "All dates".' : 'No jobs here yet. They appear after the next search.'));
@@ -475,6 +479,18 @@ function renderJobs(jobs) {
       n.classList.add('fresh');
     }
     if (j.reviewState !== 'new') badges.append(el('span', { class: 'badge muted' }, j.reviewState));
+    // Gone from Upwork: the job stays here (it is never deleted for that), with a banner.
+    if (j.removedAt) {
+      n.classList.add('removed');
+      badges.append(el('span', { class: 'badge err' }, 'Removed from Upwork'));
+      const note = n.querySelector('.removed-note');
+      note.hidden = false;
+      note.append(
+        el('strong', {}, 'Deleted from Upwork. '),
+        document.createTextNode(`This job is no longer available on Upwork (noticed ${ago(j.removedAt)}). It is kept here for your records.`),
+      );
+      if (j.removedReason) note.append(el('span', { class: 'removed-reason' }, `Upwork said: ${j.removedReason}`));
+    }
 
     const meta = n.querySelector('.meta');
     const add = (label, value) => {
@@ -519,6 +535,23 @@ function renderJobs(jobs) {
       if (act === j.reviewState || (act === 'new' && j.reviewState === 'new')) b.hidden = true;
       b.addEventListener('click', async () => {
         b.disabled = true;
+        if (act === 'check') {
+          const label = b.textContent;
+          b.textContent = 'Checking…';
+          try {
+            const r = await api('/api/jobs', { source: j.source, jobId: j.jobId, check: true });
+            await popup(r.removed
+              ? { title: 'Deleted from Upwork', message: `This job is no longer on Upwork${r.reason ? ` (${r.reason})` : ''}. It stays here, marked with a banner.`, cancel: null, tone: 'error' }
+              : { title: 'Still on Upwork', message: 'Upwork still has this job.', cancel: null });
+            await refresh();
+          } catch (err) {
+            if (!(err instanceof LoginRequired)) showError(err.message);
+          } finally {
+            b.textContent = label;
+            b.disabled = false;
+          }
+          return;
+        }
         try {
           await api('/api/jobs', act === 'delete' ? { source: j.source, jobId: j.jobId, delete: true } : { source: j.source, jobId: j.jobId, state: act });
           // Deleted (or reviewed off the "All" list): the card slides away before the list refreshes.
@@ -544,9 +577,17 @@ async function fetchJobs() {
   const p = new URLSearchParams();
   if (view.filter) p.set('filter', view.filter);
   if (view.state) p.set('state', view.state);
+  // Jobs are kept forever, so a picked day is asked from the server (it may be older than the newest jobs sent).
+  if (view.day) {
+    const [y, m, d] = view.day.split('-').map(Number);
+    p.set('from', new Date(y, m - 1, d).toISOString());
+    p.set('to', new Date(y, m - 1, d + 1).toISOString());
+  }
   const seq = ++loadSeq;
-  const { jobs } = await api(`/api/jobs?${p}`);
-  return seq === loadSeq ? jobs : null;
+  const { jobs, more, limit } = await api(`/api/jobs?${p}`);
+  if (seq !== loadSeq) return null;
+  moreJobs = more ? limit : 0;
+  return jobs;
 }
 
 async function loadJobs() {

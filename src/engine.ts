@@ -346,7 +346,6 @@ async function finish(d: EngineDeps, cycle: Cycle): Promise<RunSummary> {
     newJobs: cycle.filters.reduce((n, f) => n + f.newJobs, 0),
     stoppedEarly: cycle.stoppedEarly,
   };
-  await d.store.purge(d.cfg.retentionDays, d.cfg.maxJobAgeDays);
   await d.store.finishRun(cycle.runId, summary.status, summary);
   await d.store.kvDelete(CYCLE_KEY);
   log.info('search finished', { status: summary.status, newJobs: summary.newJobs, stoppedEarly: summary.stoppedEarly });
@@ -395,11 +394,112 @@ export async function tick(d: EngineDeps, budgetMs = d.cfg.stepBudgetSeconds * 1
   if (!(await hasPendingWork(d.store))) {
     const all = await filterSchedules(d);
     const due = all.filter((s) => Date.parse(s.nextDueAt) - DUE_SLACK_MS <= now());
-    if (!due.length) return { status: 'idle' };
+    if (!due.length) {
+      // Nothing to search: the scheduler uses the quiet time to check a few stored jobs are
+      // still on Upwork (not the open dashboard, so the page never waits on it).
+      if (trigger === 'scheduler') await checkRemovedJobs(d, budgetMs).catch((err: Error) => log.error('removal check failed', { error: err.message }));
+      return { status: 'idle' };
+    }
     if (due.length === all.length) await requestSearch(d.store, null, trigger);
     else for (const s of due) await requestSearch(d.store, s.name, trigger);
   }
   return step(d, budgetMs);
+}
+
+// --- "still on Upwork?" checks -------------------------------------------------
+
+const CHECK_LAST_KEY = 'removal_check_last';
+const CHECK_WAIT_KEY = 'removal_check_retry_after';
+/** At most one round of checks per this many ms, however often the scheduler or page calls. */
+export const CHECK_GAP_MS = 5 * 60_000;
+
+export interface CheckSummary {
+  checked: number;
+  removed: number;
+  /** Why the round stopped early (sign-in problem, rate limit), if it did. */
+  stopped: string | null;
+}
+
+/**
+ * Asks Upwork about a few stored jobs (REMOVAL_CHECK_BATCH per round, one round per
+ * CHECK_GAP_MS) and marks the ones that are gone. Each job found in the last
+ * REMOVAL_CHECK_DAYS days is re-checked about every REMOVAL_CHECK_HOURS. Never runs
+ * during a search (same lock), and never deletes anything: a removed job stays, marked.
+ */
+export async function checkRemovedJobs(d: EngineDeps, budgetMs: number): Promise<CheckSummary | null> {
+  const { store, cfg } = d;
+  const rc = cfg.removalCheck;
+  const now = d.now ?? Date.now;
+  if (rc.batch <= 0) return null;
+  const last = await store.kvGet(CHECK_LAST_KEY);
+  if (last && now() - Date.parse(last) < CHECK_GAP_MS) return null;
+  const wait = await store.kvGet(CHECK_WAIT_KEY);
+  if (wait && Date.parse(wait) > now()) return null;
+
+  const jobs = await store.jobsToCheck({
+    foundSince: new Date(now() - rc.maxAgeDays * 86_400_000).toISOString(),
+    notCheckedSince: new Date(now() - rc.everyHours * 3_600_000).toISOString(),
+    limit: rc.batch,
+  });
+  if (!jobs.length) return null;
+
+  const owner = randomUUID();
+  if (!(await store.acquireLock('search', owner, budgetMs + 60_000))) return null;
+  const sleep = d.sleep ?? defaultSleep;
+  const started = now();
+  const out: CheckSummary = { checked: 0, removed: 0, stopped: null };
+  let source: JobSource | null = null;
+  try {
+    await store.kvSet(CHECK_LAST_KEY, new Date(now()).toISOString());
+    source = await (d.openSource ?? (() => openUpwork(d)))();
+    if (!source.checkJob) return null;
+    for (const [i, job] of jobs.entries()) {
+      if (i > 0) {
+        if (now() - started + cfg.search.delayBetweenSearchesMs > budgetMs) break;
+        await sleep(cfg.search.delayBetweenSearchesMs);
+      }
+      try {
+        const r = await source.checkJob(job.jobId);
+        await store.recordJobCheck(job.source, job.jobId, r);
+        out.checked++;
+        if (r.removed) {
+          out.removed++;
+          log.info('job removed from Upwork', { job: job.jobId, reason: r.reason });
+        }
+      } catch (err) {
+        const se = err instanceof SourceError ? err : new SourceError('temporary', (err as Error).message);
+        if (se.kind === 'auth' || se.kind === 'rate_limited') {
+          out.stopped = se.message;
+          if (se.kind === 'rate_limited') await store.kvSet(CHECK_WAIT_KEY, new Date(now() + (se.retryAfterSeconds ?? 600) * 1000).toISOString());
+          break;
+        }
+        // Unclear answer: leave the job as it is and look again next interval.
+        await store.recordJobCheck(job.source, job.jobId, { removed: null });
+        log.warn('job check failed', { job: job.jobId, error: se.message });
+      }
+    }
+  } catch (err) {
+    out.stopped = (err as Error).message;
+  } finally {
+    await source?.close();
+    await store.releaseLock('search', owner);
+  }
+  if (out.checked || out.stopped) log.info('removal check', { ...out });
+  return out;
+}
+
+/** Checks one job right now (the dashboard's "Check on Upwork" button). */
+export async function checkOneJob(d: EngineDeps, source: string, jobId: string): Promise<{ removed: boolean; reason: string | null } | null> {
+  if (!(await d.store.hasJob(source, jobId))) return null;
+  const src = await (d.openSource ?? (() => openUpwork(d)))();
+  try {
+    if (!src.checkJob) throw new SourceError('permanent', 'This job source cannot check single jobs.');
+    const r = await src.checkJob(jobId);
+    await d.store.recordJobCheck(source, jobId, r);
+    return r;
+  } finally {
+    await src.close();
+  }
 }
 
 /**

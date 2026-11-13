@@ -142,5 +142,5 @@ Open **https://upwork.pelicanstechnologies.com** and enter your `DASHBOARD_PASSW
 ## Notes
 
 * Upwork's terms: see the warning at the top of README.md. It applies on Vercel too.
-* Job data is deleted after `RETENTION_DAYS` (at most 30, per Upwork's terms).
+* All data is kept until you delete it: only **Delete** on a job (or **Remove** on a filter) deletes anything. Nothing is cleared after 30 days.
 * Never commit `.env` or `data/`. A private repo is safer; to change it: GitHub → Settings → General → Danger Zone → Change visibility.

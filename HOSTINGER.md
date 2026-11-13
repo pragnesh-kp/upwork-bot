@@ -179,5 +179,6 @@ On a VPS (Ubuntu): install Node 22 and MySQL/MariaDB, create the database and us
 ## Notes
 
 * Upwork's terms: see the warning at the top of README.md. It applies on Hostinger too.
-* Job data is deleted after `RETENTION_DAYS` (at most 30, per Upwork's terms).
+* All data is kept until you delete it: only **Delete** on a job (or **Remove** on a filter) deletes anything. Nothing is cleared after 30 days. A leftover `RETENTION_DAYS` environment variable is ignored, so you can delete it.
+* The database tables are upgraded by themselves on start (new columns for "Deleted from Upwork"); nothing to run by hand.
 * Never commit `.env` or `data/`.

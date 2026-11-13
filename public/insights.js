@@ -211,7 +211,7 @@
         load();
       }));
     }
-    const c = section(1, 'Daily Job Posting Insights', `New Upwork jobs matching ${ins.filter ? `"${ins.filter}"` : 'your filters'}, by the hour and day they were posted. A job that matches two filters counts once in "All filters". History is kept ${d.retentionDays} days.`, right);
+    const c = section(1, 'Daily Job Posting Insights', `New Upwork jobs matching ${ins.filter ? `"${ins.filter}"` : 'your filters'}, by the hour and day they were posted. A job that matches two filters counts once in "All filters". History is kept until you delete it.`, right);
 
     // KPI tiles.
     const vol = count(d.jobs.inWindow);

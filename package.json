@@ -29,7 +29,7 @@
     "filters": "node --disable-warning=ExperimentalWarning src/cli.ts filters",
     "search": "node --disable-warning=ExperimentalWarning src/cli.ts search",
     "status": "node --disable-warning=ExperimentalWarning src/cli.ts status",
-    "purge": "node --disable-warning=ExperimentalWarning src/cli.ts purge",
+    "check-job": "node --disable-warning=ExperimentalWarning src/cli.ts check-job",
     "disconnect": "node --disable-warning=ExperimentalWarning src/cli.ts disconnect",
     "test": "node --disable-warning=ExperimentalWarning --test \"test/**/*.test.ts\"",
     "typecheck": "tsc -p tsconfig.json"

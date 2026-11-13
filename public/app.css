@@ -292,6 +292,21 @@ button.link.danger { color: var(--red); }
 }
 /* Just found: a gradient frame. */
 .job.fresh { border: 1.5px solid transparent; background: linear-gradient(var(--panel), var(--panel)) padding-box, linear-gradient(135deg, #10b981, #00b4ff 50%, #1f5bff) border-box; }
+/* Deleted from Upwork: kept, with a red banner on top. */
+.job.removed { border-color: color-mix(in srgb, var(--red) 40%, var(--border)); }
+.removed-note {
+  display: flex; flex-wrap: wrap; gap: 4px 6px; align-items: baseline;
+  margin: -4px 0 12px; padding: 10px 12px 10px 36px; border-radius: 10px; position: relative;
+  background: var(--red-soft); color: var(--red); font-size: 13px; line-height: 1.45;
+}
+.removed-note[hidden] { display: none; }
+.removed-note::before {
+  content: ""; position: absolute; left: 12px; top: 11px; width: 16px; height: 16px; background: currentColor;
+  -webkit-mask: var(--i-alert) center / contain no-repeat; mask: var(--i-alert) center / contain no-repeat;
+}
+.removed-note strong { font-weight: 750; }
+.removed-reason { flex-basis: 100%; font-size: 12px; opacity: 0.85; }
+.job-actions [data-act="check"] { --icon: var(--i-refresh); }
 .job-head { display: flex; gap: 12px; justify-content: space-between; align-items: flex-start; }
 .title { font-weight: 700; font-size: 16px; line-height: 1.4; letter-spacing: -0.01em; color: var(--text); text-decoration: none; }
 .title[href]:hover { color: var(--accent); }
@@ -860,9 +875,11 @@ button, a, summary { -webkit-tap-highlight-color: transparent; touch-action: man
   }
   .chip { font-size: 11.5px; }
 
-  /* Save / Reviewed / Delete share one row; "Open on Upwork" gets its own full-width row. */
+  /* Save / Reviewed / Delete share one row; "Check on Upwork" and "Open on Upwork" get full-width rows. */
   .job-actions { gap: 7px; }
   .job-actions button { flex: 1 1 0; min-width: 0; padding: 0 6px; gap: 5px; font-size: 12.5px; }
+  .job-actions [data-act="check"] { flex: 1 1 100%; order: 1; }
+  .job-actions .open { order: 2; }
   .job-actions .open { flex: 1 1 100%; height: 46px; font-size: 14.5px; border-radius: 13px; }
   .empty { padding: 36px 16px; }
 

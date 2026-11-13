@@ -159,6 +159,7 @@
 
     <template id="job-tpl">
       <article class="job">
+        <div class="removed-note" role="note" hidden></div>
         <div class="job-head">
           <a class="title" target="_blank" rel="noopener noreferrer"></a>
           <div class="badges"></div>
@@ -171,6 +172,7 @@
           <button data-act="saved" type="button">Save</button>
           <button data-act="reviewed" type="button">Reviewed</button>
           <button data-act="new" type="button" class="undo">Mark new</button>
+          <button data-act="check" type="button" title="Ask Upwork now whether this job is still there">Check on Upwork</button>
           <button data-act="delete" type="button" class="delete">Delete</button>
           <a class="open" target="_blank" rel="noopener noreferrer">Open on Upwork</a>
         </div>

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { loadConfig, type Config } from '../src/config.ts';
 import { Store } from '../src/db.ts';
-import { continueSearch, getCycle, nextDueAt, requestSearch, SOURCE, step, tick, type EngineDeps } from '../src/engine.ts';
+import { CHECK_GAP_MS, checkOneJob, checkRemovedJobs, continueSearch, getCycle, nextDueAt, requestSearch, SOURCE, step, tick, type EngineDeps } from '../src/engine.ts';
 import { type FilterDef, type SearchTarget } from '../src/filters.ts';
 import { SourceError, type Job, type JobSource, type SearchPage } from '../src/sources/types.ts';
 
@@ -32,6 +32,16 @@ class FakeSource implements JobSource {
   calls = 0;
   targets: string[] = [];
   ignored: string[] = [];
+  /** Jobs Upwork no longer has (checkJob answers "removed"). */
+  gone = new Set<string>();
+  checkErrors: SourceError[] = [];
+  checked: string[] = [];
+  async checkJob(id: string) {
+    this.checked.push(id);
+    const e = this.checkErrors.shift();
+    if (e) throw e;
+    return this.gone.has(id) ? { removed: true, reason: 'Job not found' } : { removed: false, reason: null };
+  }
   describeMapping() {
     return { applied: [], notApplied: [] };
   }
@@ -365,17 +375,123 @@ test('a deleted job is removed and never added back by a later search', async ()
   assert.deepEqual((await store.listJobs({ filters: ['React'] })).map((j) => j.jobId), ['r2']);
 });
 
-test('purge clears jobs posted too long ago, but keeps saved ones', async () => {
-  const store = Store.open(':memory:');
-  const d = (id: string, postedAt: string | null) => ({ id, title: id, url: null, budget: '', contractType: null, postedAt, snippet: null, skills: [] });
-  const old = new Date(Date.now() - 5 * 86_400_000).toISOString();
-  await store.saveJobs(SOURCE, 'F', [
-    { details: d('old', old), baseline: false },
-    { details: d('oldSaved', old), baseline: false },
-    { details: d('fresh', new Date().toISOString()), baseline: false },
-    { details: d('noDate', null), baseline: false },
+test('nothing is ever cleared automatically: year-old jobs, counts, history and deleted ids survive searches (RETENTION_DAYS is ignored)', async () => {
+  const { store, src, add, search } = setup({ RETENTION_DAYS: '30', MAX_JOB_AGE_DAYS: '3' });
+  await add('React', 'react');
+  const old = new Date(Date.now() - 400 * 86_400_000).toISOString();
+  // Rows written a year ago (as an older version of the app would have left them).
+  await store.importRows('job_details', [
+    { source: SOURCE, job_id: 'old', title: 'React old', skills: '[]', posted_at: old, review_state: 'new', baseline: 0, first_seen_at: old, last_seen_at: old },
+    { source: SOURCE, job_id: 'oldSaved', title: 'React old saved', skills: '[]', posted_at: old, review_state: 'saved', baseline: 0, first_seen_at: old, last_seen_at: old },
   ]);
-  await store.setReviewState(SOURCE, 'oldSaved', 'saved');
-  await store.purge(30, 3);
-  assert.deepEqual((await store.listJobs({ filters: ['F'] })).map((j) => j.jobId).sort(), ['fresh', 'noDate', 'oldSaved']);
+  await store.importRows('seen_jobs', [{ source: SOURCE, job_id: 'old', first_seen_at: old, last_seen_at: old }]);
+  await store.importRows('job_matches', [
+    { source: SOURCE, job_id: 'old', filter_name: 'React', matched_at: old },
+    { source: SOURCE, job_id: 'oldSaved', filter_name: 'React', matched_at: old },
+  ]);
+  await store.importRows('job_posts', [{ source: SOURCE, job_id: 'old', filter_name: 'React', posted_at: old, found_at: old }]);
+  await store.importRows('deleted_jobs', [{ source: SOURCE, job_id: 'gone', deleted_at: old }]);
+  await store.importRows('scan_log', [{ run_id: 1, filter_name: 'React', trigger: 'scheduler', started_at: old, finished_at: old, status: 'ok' }]);
+
+  src.market = [job('fresh', 'React fresh'), job('gone', 'React gone')];
+  await search();
+  await search();
+
+  assert.deepEqual((await store.listJobs({ filters: ['React'] })).map((j) => j.jobId).sort(), ['fresh', 'old', 'oldSaved']);
+  assert.equal((await store.exportTable('seen_jobs')).some((r) => r.job_id === 'old'), true);
+  assert.equal((await store.exportTable('job_posts')).some((r) => r.job_id === 'old'), true);
+  assert.equal((await store.exportTable('scan_log')).some((r) => r.started_at === old), true);
+  assert.deepEqual([...(await store.deletedIds(SOURCE, ['gone']))], ['gone'], 'a job you deleted stays deleted, and is never fetched again');
+});
+
+test('a job is only removed when you delete it', async () => {
+  const { store, src, add, search } = setup();
+  await add('React', 'react');
+  src.market = [job('r1', 'React one'), job('r2', 'React two')];
+  await search();
+  assert.equal(await store.deleteJob(SOURCE, 'r1'), true);
+  assert.deepEqual((await store.listJobs({ filters: ['React'] })).map((j) => j.jobId), ['r2']);
+});
+
+test('the same job found again and again is stored once', async () => {
+  const { store, src, add, search } = setup();
+  await add('React', 'react');
+  src.market = [job('r1', 'React one')];
+  await search();
+  await search();
+  src.market = [job('r1', 'React one (edited title)')];
+  await search();
+  const jobs = await store.listJobs({ filters: ['React'] });
+  assert.equal(jobs.length, 1);
+  assert.equal(jobs[0]!.title, 'React one (edited title)', 'fields are refreshed in place');
+  assert.equal(await store.seenCount(), 1);
+});
+
+test('jobs removed from Upwork are marked, kept and listed; finding one again clears the mark', async () => {
+  const { store, src, clock, deps, add, search } = setup();
+  await add('React', 'react');
+  src.market = [job('r1', 'React one'), job('r2', 'React two'), job('r3', 'React three')];
+  await search();
+  // Just found: not due for a check yet.
+  assert.equal(await checkRemovedJobs(deps, 60_000), null);
+  assert.deepEqual(src.checked, []);
+
+  src.market = [job('r1', 'React one'), job('r3', 'React three')];
+  src.gone.add('r2');
+  clock.t += 25 * 3_600_000;
+  const r = await checkRemovedJobs(deps, 60_000);
+  assert.deepEqual(r, { checked: 3, removed: 1, stopped: null });
+  const jobs = await store.listJobs({ filters: ['React'] });
+  assert.equal(jobs.length, 3, 'a removed job is still listed');
+  const r2 = jobs.find((j) => j.jobId === 'r2')!;
+  assert.ok(r2.removedAt);
+  assert.equal(r2.removedReason, 'Job not found');
+  assert.ok(jobs.every((j) => j.checkedAt));
+  assert.equal(await store.removedCount(['React']), 1);
+
+  // One round per CHECK_GAP_MS at most.
+  assert.equal(await checkRemovedJobs(deps, 60_000), null);
+
+  assert.equal((await store.listJobs({ filters: ['React'] })).length, 3);
+
+  // A search returns it again: it is on Upwork after all.
+  src.market = [job('r2', 'React two')];
+  await search();
+  assert.equal((await store.listJobs({ filters: ['React'] })).find((j) => j.jobId === 'r2')!.removedAt, null);
+  assert.equal(await store.removedCount(['React']), 0);
+});
+
+test('removal checks: unclear answers mark nothing, a sign-in problem stops the round, only the scheduler checks', async () => {
+  const { store, src, clock, deps, add, search } = setup({ REMOVAL_CHECK_BATCH: '3' });
+  await add('React', 'react');
+  src.market = [job('r1', 'React one'), job('r2', 'React two'), job('r3', 'React three')];
+  await search();
+  src.gone.add('r1').add('r2').add('r3');
+  clock.t += 25 * 3_600_000;
+
+  // The dashboard's own calls never run checks (a search is due here, and runs instead).
+  await tick(deps, 60_000, 'dashboard');
+  assert.deepEqual(src.checked, []);
+
+  src.checkErrors = [new SourceError('temporary', 'boom'), new SourceError('auth', 'Upwork sign-in expired')];
+  const r = await checkRemovedJobs(deps, 60_000);
+  assert.equal(r?.checked, 0);
+  assert.equal(r?.stopped, 'Upwork sign-in expired');
+  assert.equal(await store.removedCount(['React']), 0, 'nothing marked from an error');
+
+  // The "Check on Upwork" button checks one job at once, gap or not.
+  assert.deepEqual(await checkOneJob(deps, SOURCE, 'r3'), { removed: true, reason: 'Job not found' });
+  assert.equal(await checkOneJob(deps, SOURCE, 'nope'), null);
+  assert.equal(await store.removedCount(['React']), 1);
+  assert.ok(CHECK_GAP_MS >= 60_000);
+});
+
+test('REMOVAL_CHECK_BATCH=0 turns the checks off', async () => {
+  const { src, clock, deps, add, search } = setup({ REMOVAL_CHECK_BATCH: '0' });
+  await add('React', 'react');
+  src.market = [job('r1', 'React one')];
+  await search();
+  clock.t += 25 * 3_600_000;
+  assert.equal(await checkRemovedJobs(deps, 60_000), null);
+  assert.deepEqual(src.checked, []);
 });
